@@ -84,8 +84,12 @@ Or on MongoDB from the command line (the same change, not tested here):
 mongosh "$DATABASE_URI" --eval 'db.users.updateMany({}, { $set: { sessions: [] } })'
 ```
 
-From 0.1.2, Masq refuses to start on an auth collection with `useSessions: false`, because it
-ends a borrowed token by deleting its session. If you ran 0.1.0 or 0.1.1 that way, changing
+From 0.1.2, Masq needs `useSessions` left out or set to `true` on its auth collection, because it
+ends a borrowed token by deleting its session. Any other value (`false`, `0`, an empty string)
+stops the build. It checks again when Payload starts, so a plugin listed after Masq or a change
+to the built config that turns sessions off stops start-up too. If sessions are off anyway, for
+example when start-up checks were skipped, no borrowed token signs anyone in and no masquerade
+can start. If you ran 0.1.0 or 0.1.1 that way, changing
 `PAYLOAD_SECRET` is the only way to end the old tokens, and it signs everyone out.
 
 ## On its own, and with others

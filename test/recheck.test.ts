@@ -1,6 +1,6 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
-import { buildConfig, getPayload, handleEndpoints, type Payload, type SanitizedConfig } from 'payload'
+import { BasePayload, buildConfig, getPayload, handleEndpoints, type Plugin, type Payload, type SanitizedConfig } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { masqPlugin, STATE_COOKIE, type MasqRecheckArgs, type MasqStopArgs } from '../src/index.js'
@@ -281,6 +281,39 @@ describe('config', () => {
     ).rejects.toThrow(/useSessions: false/)
   })
 
+  it('refuses any other useSessions that Payload reads as off', async () => {
+    for (const useSessions of [0, '']) {
+      await expect(
+        buildConfig({
+          secret: 'x',
+          telemetry: false,
+          db: mongooseAdapter({ url: 'mongodb://127.0.0.1:1/never' }),
+          collections: [{ slug: 'people', auth: { useSessions: useSessions as never }, fields: [] }],
+          plugins: [masqPlugin({ collection: 'people', canMasquerade: () => true })],
+        }),
+      ).rejects.toThrow(/masq needs useSessions: true/)
+    }
+  })
+
+  it('refuses to start when a plugin listed after masq turns sessions off', async () => {
+    const sessionsOff: Plugin = (c) => ({ ...c, collections: c.collections?.map((col) => (col.slug === 'people' ? { ...col, auth: { ...(col.auth as object), useSessions: false } } : col)) })
+    const later = await buildConfig({
+      secret: 'later-plugin-test-secret',
+      logger: { options: { level: 'silent' } },
+      telemetry: false,
+      typescript: { autoGenerate: false },
+      db: mongooseAdapter({ url: mongo.getUri('masq-later-plugin') }),
+      collections: [{ slug: 'people', auth: true, fields: [] }],
+      plugins: [masqPlugin({ collection: 'people', canMasquerade: () => true }), sessionsOff],
+    })
+    const p = new BasePayload()
+    try {
+      await expect(p.init({ config: later })).rejects.toThrow(/useSessions: false/)
+    } finally {
+      await p.destroy().catch(() => undefined)
+    }
+  })
+
   it('refuses a readOnly that is not true or false', () => {
     for (const readOnly of [0, '', 'no', 'false', null, {}]) expect(() => masqPlugin({ canMasquerade: () => true, readOnly: readOnly as never })({ collections: [{ slug: 'users', auth: true, fields: [] }] } as never)).toThrow(/readOnly/)
   })
@@ -306,6 +339,58 @@ describe('repeated and paired borrowed tokens', () => {
     expect(res.status).toBe(200)
     expect(await sessionsOf(a)).toEqual([])
     expect(await sessionsOf(b)).toHaveLength(1)
+  })
+})
+
+describe('sessions turned off after start-up', () => {
+  // getPayload skips onInit for a cached instance, and a host can change the built config, so the recheck and
+  // start read the built config on every request too.
+  const auth = () => payload.collections.users!.config.auth as { useSessions?: unknown }
+  it('a borrowed token signs nobody in, and start refuses', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const borrowed = (await masquerade(admin, member))['payload-token']!
+    const login = await rest('POST', `/${USERS}/login`, {}, { email: admin.email, password: PW })
+    const own = jarOf(login)['payload-token']!
+    auth().useSessions = false
+    try {
+      expect(await me(bearer(borrowed))).toBeNull()
+      expect((await me(bearer(own)))?.id).toBe(admin.id)
+      const res = await rest('POST', `/${USERS}/${member.id}/masq`, cookies({ 'payload-token': own }), {})
+      expect(res.status).toBe(500)
+      expect(res.headers.getSetCookie().some((c) => c.startsWith('payload-token=') && !c.startsWith('payload-token=;'))).toBe(false)
+    } finally {
+      auth().useSessions = true
+    }
+  })
+})
+
+describe('stop reports the borrowed session that signed in', () => {
+  it('names the masquerader whose token signed in, when another masquerader rides in the cookie', async () => {
+    const [admin1, admin2, member] = [await make('admin'), await make('admin'), await make('member')]
+    const token1 = (await masquerade(admin1, member))['payload-token']!
+    const token2 = (await masquerade(admin2, member))['payload-token']!
+    stops.length = 0
+    // Payload reads the header before the cookie, so admin1's borrowed session signs in.
+    const res = await rest('POST', `/${USERS}/masq/stop`, { ...bearer(token1), cookie: `payload-token=${token2}` })
+    expect(res.status).toBe(200)
+    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin1.id, targetId: member.id })])
+    expect(await sessionsOf(member)).toHaveLength(1)
+    expect((await me(bearer(token2)))?.id).toBe(member.id)
+    expect(await me(bearer(token1))).toBeNull()
+  })
+
+  it("leaves the target's own session alone when a borrowed token rides in the cookie", async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const borrowed = (await masquerade(admin, member))['payload-token']!
+    const login = await rest('POST', `/${USERS}/login`, {}, { email: member.email, password: PW })
+    const own = jarOf(login)['payload-token']!
+    expect(await sessionsOf(member)).toHaveLength(2)
+    stops.length = 0
+    // The member's own token in the header signs in; the borrowed one in the cookie isn't the session in use.
+    await rest('POST', `/${USERS}/masq/stop`, { ...bearer(own), cookie: `payload-token=${borrowed}` })
+    expect(stops).toEqual([])
+    expect((await me(bearer(own)))?.id).toBe(member.id)
+    expect((await me(bearer(borrowed)))?.id).toBe(member.id)
   })
 })
 

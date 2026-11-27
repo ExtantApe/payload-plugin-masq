@@ -2,10 +2,13 @@ import { APIError, type CollectionBeforeOperationHook, type Config, type GlobalB
 
 import { searchEndpoint, startEndpoint, stopEndpoint } from './endpoints.js'
 import { recheckStrategy } from './recheck.js'
-import { borrowedBy, isMasquerading } from './state.js'
+import { borrowedBy, isMasquerading, sessionsOn } from './state.js'
 import type { MasqPluginOptions, ResolvedMasqOptions } from './types.js'
 
 /** Payload's own bookkeeping, written while simply looking around the admin. */
+const sessionsError = (collection: string, value: unknown) =>
+  `payload-plugin-masq: collection "${collection}" has useSessions: ${JSON.stringify(value) ?? 'undefined'}; masq needs useSessions: true to end a borrowed session`
+
 const BOOKKEEPING = new Set(['payload-preferences', 'payload-locked-documents'])
 
 export const READ_ONLY_MESSAGE = 'Masquerade is read-only: nothing can be created, changed or deleted while masquerading.'
@@ -84,8 +87,9 @@ export const masqPlugin =
     if (!target.auth) throw new Error(`payload-plugin-masq: collection "${collection}" is not an auth collection`)
     // The recheck and the stop endpoint end a borrowed token by deleting its session. Without sessions there is
     // nothing to delete, and a demoted masquerader would keep the token until it expires.
-    if (typeof target.auth === 'object' && target.auth.useSessions === false)
-      throw new Error(`payload-plugin-masq: collection "${collection}" has useSessions: false; masq needs sessions to end a borrowed session`)
+    // Payload turns sessions off for any falsy value and only fills in its default (true) for null or undefined.
+    const useSessions = typeof target.auth === 'object' ? (target.auth as { useSessions?: unknown }).useSessions : undefined
+    if (useSessions != null && useSessions !== true) throw new Error(sessionsError(collection, useSessions))
     if (options.readOnly !== undefined && typeof options.readOnly !== 'boolean') throw new Error('payload-plugin-masq: readOnly must be true or false')
     const components = config.admin?.components ?? {}
     const globals = resolved.readOnly
@@ -104,8 +108,15 @@ export const masqPlugin =
           },
         }))
       : config.globals
+    // Another plugin or the host can still turn sessions off after this point, so check the built config too.
+    const onInit = config.onInit
     return {
       ...config,
+      onInit: async (payload) => {
+        if (!sessionsOn(payload, collection))
+          throw new Error(sessionsError(collection, (payload.collections[collection as never]?.config.auth as { useSessions?: unknown } | undefined)?.useSessions))
+        await onInit?.(payload)
+      },
       globals,
       custom: { ...config.custom, masq: resolved },
       admin: {

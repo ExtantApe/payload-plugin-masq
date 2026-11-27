@@ -1,7 +1,7 @@
 import type { AuthStrategy, AuthStrategyFunctionArgs, Payload, PayloadRequest } from 'payload'
 
 import { exactlyTrue, mayMasquerade } from './access.js'
-import { type BorrowedClaim, borrowedClaims, masqOptions } from './state.js'
+import { type BorrowedClaim, borrowedClaims, masqOptions, sessionsOn } from './state.js'
 import type { MasqUser, ResolvedMasqOptions } from './types.js'
 
 type WithSessions = MasqUser & { sessions?: { id: string }[] }
@@ -98,6 +98,8 @@ export const recheckStrategy: AuthStrategy = {
       if (!claims.length) return { user: null }
       const opts = masqOptions(payload)
       if (!opts) throw new Error('masq options are missing')
+      // Without sessions nothing can end a borrowed token, so it never signs in.
+      if (!sessionsOn(payload, opts.collection)) throw new Error('the masquerade collection has sessions turned off')
       // The stop endpoint ends the borrowed session itself and reports it once through onStop.
       if (req?.url && req.method === 'POST' && pathOf(req.url) === `${opts.apiRoute}/${opts.collection}/masq/stop`) return { user: null }
       const now = Date.now() / 1000

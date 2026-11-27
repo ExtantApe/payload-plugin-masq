@@ -115,12 +115,27 @@ export function borrowedClaims(payload: Payload, headers: Headers | null | undef
   return out
 }
 
-/** The first borrowed claim, or with `userId`, the claim on the token that signs in that user. */
-export function borrowedClaim(payload: Payload, headers: Headers | null | undefined, userId?: string): { by: string; id: string } | null {
+/**
+ * The first borrowed claim, or with `session`, the claim on the very token that signed in: the same user and the
+ * same session id. A second token for the same user (another masquerader's, or the user's own) is never picked.
+ */
+export function borrowedClaim(
+  payload: Payload,
+  headers: Headers | null | undefined,
+  session?: { userId: string; sid: string | undefined },
+): { by: string; id: string } | null {
   const all = borrowedClaims(payload, headers)
-  const c = userId === undefined ? all[0] : all.find((x) => x.id === userId)
+  const c = session === undefined ? all[0] : session.sid ? all.find((x) => x.id === session.userId && x.sid === session.sid) : undefined
   return c ? { by: c.by, id: c.id } : null
 }
+
+/**
+ * Whether the masquerade collection, as Payload finally built it, keeps sessions. Payload turns sessions off for
+ * any falsy useSessions, and another plugin or the host can change it after masq has run, so this reads the
+ * built config and only exactly true counts.
+ */
+export const sessionsOn = (payload: Payload, collection: string) =>
+  (payload.collections?.[collection as never]?.config?.auth as { useSessions?: unknown } | undefined)?.useSessions === true
 
 /** The masquerader's id if the request carries a genuine borrowed session's token. */
 export const borrowedBy = (payload: Payload, headers: Headers | null | undefined) => borrowedClaim(payload, headers)?.by ?? null
