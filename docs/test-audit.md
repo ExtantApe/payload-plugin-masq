@@ -2,6 +2,37 @@
 
 Newest first.
 
+## 2026-11-26: borrowed sessions are rechecked on every request (K807)
+
+A security fix. Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its first 12 tests failed on the old source. A review then found six more gaps, each with a test that fails on the old source: 18 tests, all passing. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 67. A second review found that a borrowed token spelled loosely (padding or whitespace in the signature, spaces around the cookie name) signed in while Masq didn't see it as borrowed. Twelve tests now cover six spellings, each checked after a demotion and under read-only mode; ten failed on the old source (the percent-encoded cookie was already caught and stays as a guard). Suite: 67 → 79. A third review found that with `useSessions: false` the recheck did nothing, that `readOnly: 0` turned read-only off, that a repeated token was rechecked once per copy, and that stop picked the wrong claim when two borrowed tokens came in. Four tests, each failing on the old source, now cover them. Suite: 79 → 83. A fourth review found that the sessions check missed `0` and `''`, a plugin listed after Masq, and a built config changed before start-up, and that stop matched the claim by user only, so with two tokens for one target it could report the wrong masquerader or delete the target's own session. Each now has a test that fails on the old source: two config refusals, a refusal at start-up, a runtime check with sessions turned off after start-up, and two stop cases. Suite: 83 → 88. A fifth review found that with the state cookie present, stop still matched by user only. Two tests, both failing on the old source, cover the target's own token and another masquerader's token signing in beside the state cookie. Suite: 88 → 90.
+
+| Promise | Test |
+| --- | --- |
+| A bearer token with no cookie stops working once the masquerader is demoted; the session is deleted and `onStop` gets `revoked: true` | `…a bearer token with no cookie stops working…` |
+| The cookie stops working once the masquerader is demoted | `…the cookie stops working…` |
+| The session ends when the target changes so the rule says no | `…ends when the target changes…` |
+| The session ends when the masquerader account is deleted | `…ends when the masquerader account is deleted` |
+| Return after a revoke restores nothing and reports `onStop` once | `…not restored by stop, and onStop is called once` |
+| `recheck` gets both users, and `true` keeps the session | `the recheck option > passes the masquerader and the target…` |
+| `false`, a truthy non-true, a resolved 1 and a throw all end the session | `the recheck option > ends the session on …` (4) |
+| A failed delete runs the request signed out (cookie and bearer) | `fails closed > …deleting the borrowed session fails` |
+| A failed read of the masquerader runs the request signed out, and the session works again once reads do | `fails closed > …reading the masquerader fails` |
+| The target's own sign-in made during a check survives the revoke | `fails closed > keeps the target's own sign-in…` |
+| Four requests at once revoke the session and report `onStop` once | `fails closed > reports onStop once…` |
+| The stop endpoint with a trailing slash is left to the endpoint | `fails closed > …trailing slash` |
+| A collection that isn't an auth collection is refused at startup | `config > refuses a collection…` |
+| Ordinary sign-ins are never rechecked | `…leaves people's own sign-ins alone` |
+| Control: an allowed session keeps working by cookie and bearer | `…keeps working while the rule still says yes` |
+| A loosely spelled borrowed token (padding or whitespace in the signature, spaces around the cookie name) ends after a demotion and stays read-only | `other spellings of a borrowed token > …` (12) |
+| `useSessions: false`, `0` and `''` are refused when the config is built | `config > refuses an auth collection with sessions turned off`, `…any other useSessions that Payload reads as off` |
+| A plugin listed after Masq that turns sessions off makes start-up fail | `config > refuses to start when a plugin listed after masq turns sessions off` |
+| With sessions turned off after start-up, a borrowed token signs nobody in, the admin's own token still works, and start refuses with no token cookie | `sessions turned off after start-up > …` |
+| `readOnly` must be a boolean | `config > refuses a readOnly that is not true or false` |
+| A token repeated in the cookie and the header is rechecked once | `repeated and paired borrowed tokens > rechecks a token repeated…` |
+| Stop ends only the borrowed session that signed in, matched by user and session id, and names its masquerader in `onStop`, with or without the state cookie; the target's own session and another masquerader's session are left alone | `repeated and paired borrowed tokens > stop ends the borrowed session Payload signed in with…`, `stop reports the borrowed session that signed in > …` (4) |
+
+Skipped: a separate GraphQL test. The strategy runs in Payload's shared auth step, which the REST `/me` and `payload.auth` tests already exercise.
+
 ## 2026-11-11 (re-read): the masqBy claim must be genuine
 
 The re-read approved 1b4cf61 with one should: the stop endpoint read `masqBy` without checking its signature, so a plain user who sent their real token in `Authorization` and a cookie copy with a forged claim got a false `onStop` entry and lost their own session. The claim now counts only on a token signed with Payload's secret (HS256, as Payload checks its JWTs), and stop uses it only when the token signs in the user the request is authenticated as. Suite: 47 → 49.

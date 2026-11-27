@@ -1,7 +1,7 @@
 import { addDataAndFileToRequest, APIError, getFieldsToSign, jwtSign, type Endpoint, type PayloadRequest, type Where } from 'payload'
 import { addSessionToUser, parseCookies } from 'payload/shared'
 
-import { BORROWED_CLAIM, borrowedClaim, cookie, encodeState, isMasquerading, masqOptions, masqStateOf, RETURN_COOKIE, STATE_COOKIE } from './state.js'
+import { BORROWED_CLAIM, borrowedClaim, cookie, encodeState, isMasquerading, masqOptions, masqStateOf, RETURN_COOKIE, sessionsOn, STATE_COOKIE } from './state.js'
 import { mayMasquerade } from './access.js'
 import type { MasqUser } from './types.js'
 
@@ -29,6 +29,8 @@ export const startEndpoint: Endpoint = {
   handler: async (req) => {
     const opts = masqOptions(req.payload)
     const user = signedIn(req)
+    // Without sessions a borrowed token can't be ended early, so none is handed out.
+    if (!sessionsOn(req.payload, opts.collection)) throw new APIError('Masquerade needs sessions turned on.', 500, undefined, true)
     if (isMasquerading(req.payload, req.headers)) throw new APIError('Stop masquerading first.', 400, undefined, true)
     const own = parseCookies(req.headers).get(tokenCookie(req))
     if (!own) throw new APIError('Masquerade needs a browser sign-in.', 400, undefined, true)
@@ -87,9 +89,10 @@ export const stopEndpoint: Endpoint = {
     // cookie is gone, by the borrowed token's own claim.
     const borrowed = req.user as (MasqUser & { _sid?: string; collection?: string }) | null
     // Only a genuine claim, on the token that signs in the very user this request is authenticated as.
-    const claim = borrowedClaim(req.payload, req.headers)
+    const claim = borrowed ? borrowedClaim(req.payload, req.headers, { userId: String(borrowed.id), sid: borrowed._sid }) : null
     const claimedBy = claim && borrowed && claim.id === String(borrowed.id) ? claim.by : null
-    const live = Boolean(borrowed?.collection === opts.collection && (state ? String(borrowed.id) === state.as : claimedBy))
+    // With the state cookie, only the borrowed session it names: same target and same masquerader.
+    const live = Boolean(borrowed?.collection === opts.collection && claimedBy && (!state || (claim!.id === state.as && claimedBy === state.by)))
     if (live && borrowed?._sid) {
       const doc = (await req.payload.findByID({ collection: opts.collection as never, id: borrowed.id, depth: 0, overrideAccess: true, showHiddenFields: true, req })) as {
         sessions?: { id: string }[]

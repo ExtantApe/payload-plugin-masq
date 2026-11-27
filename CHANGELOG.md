@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.1.2 (2026-11-26)
+
+### Security
+
+- A borrowed session is checked on every request. Before, a masquerade kept working for the
+  rest of its hour after the masquerader lost the right to it, and a borrowed token sent as
+  `Authorization: Bearer` with no cookie kept it working with nothing to say it should stop.
+  Now each request that carries a borrowed token asks `canMasquerade` again, with both users
+  loaded fresh. A no deletes the borrowed session, so that request and every later one run
+  signed out. If the check can't finish, because a read or the delete fails, the borrowed
+  token is ignored for that request, so it still runs signed out.
+- The delete reads the target's sessions again in a transaction, so a sign-in the target makes
+  while a check is running is kept, and several requests at once report `onStop` once.
+- Masq refuses a collection that isn't an auth collection, a `useSessions` other than `true` or
+  left out (with sessions off there is no session to delete, so the recheck could never end a
+  borrowed token), and a `readOnly` that isn't `true` or `false` (before, `0` turned read-only
+  off). The sessions check runs when the config is built and again when Payload starts, so a
+  plugin listed after Masq can't turn sessions off unnoticed. If sessions are off anyway, a
+  borrowed token signs nobody in and start refuses.
+- A borrowed token repeated in the cookie, or sent in the cookie and the header, is checked once.
+- Stop ends the borrowed session the request is signed in with, matched by user and session, and
+  with the state cookie only when it names that same masquerader and target.
+  Before, with one borrowed token in the header and another in the cookie, it could end the wrong
+  one or neither, report the wrong masquerader to `onStop`, or, when the target's own token signed
+  in, delete the target's own session.
+- A borrowed token is recognized however Payload would accept it. Before, padding or a space in
+  the signature, or a space around the cookie name, signed in as the target while Masq didn't see
+  the token as borrowed, so the recheck, read-only mode and the refresh refusal all missed it.
+
+### Added
+
+- `recheck` option: an extra per-request check after `canMasquerade`. Only exactly `true`
+  passes.
+- `onStop` gets `revoked: true` when the per-request check ended the session.
+
 ## 0.1.1 (2026-11-11)
 
 ### Upgrading

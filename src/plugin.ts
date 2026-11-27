@@ -1,10 +1,14 @@
 import { APIError, type CollectionBeforeOperationHook, type Config, type GlobalBeforeChangeHook, type GlobalBeforeOperationHook, type Plugin } from 'payload'
 
 import { searchEndpoint, startEndpoint, stopEndpoint } from './endpoints.js'
-import { borrowedBy, isMasquerading } from './state.js'
+import { recheckStrategy } from './recheck.js'
+import { borrowedBy, isMasquerading, sessionsOn } from './state.js'
 import type { MasqPluginOptions, ResolvedMasqOptions } from './types.js'
 
 /** Payload's own bookkeeping, written while simply looking around the admin. */
+const sessionsError = (collection: string, value: unknown) =>
+  `payload-plugin-masq: collection "${collection}" has useSessions: ${JSON.stringify(value) ?? 'undefined'}; masq needs useSessions: true to end a borrowed session`
+
 const BOOKKEEPING = new Set(['payload-preferences', 'payload-locked-documents'])
 
 export const READ_ONLY_MESSAGE = 'Masquerade is read-only: nothing can be created, changed or deleted while masquerading.'
@@ -74,10 +78,19 @@ export const masqPlugin =
       enabled: true,
       onStart: options.onStart,
       onStop: options.onStop,
+      recheck: options.recheck,
       apiRoute: config.routes?.api ?? '/api',
       adminRoute,
     }
-    if (!(config.collections ?? []).some((c) => c.slug === collection)) throw new Error(`payload-plugin-masq: no collection "${collection}"`)
+    const target = (config.collections ?? []).find((c) => c.slug === collection)
+    if (!target) throw new Error(`payload-plugin-masq: no collection "${collection}"`)
+    if (!target.auth) throw new Error(`payload-plugin-masq: collection "${collection}" is not an auth collection`)
+    // The recheck and the stop endpoint end a borrowed token by deleting its session. Without sessions there is
+    // nothing to delete, and a demoted masquerader would keep the token until it expires.
+    // Payload turns sessions off for any falsy value and only fills in its default (true) for null or undefined.
+    const useSessions = typeof target.auth === 'object' ? (target.auth as { useSessions?: unknown }).useSessions : undefined
+    if (useSessions != null && useSessions !== true) throw new Error(sessionsError(collection, useSessions))
+    if (options.readOnly !== undefined && typeof options.readOnly !== 'boolean') throw new Error('payload-plugin-masq: readOnly must be true or false')
     const components = config.admin?.components ?? {}
     const globals = resolved.readOnly
       ? (config.globals ?? []).map((g) => ({
@@ -95,8 +108,15 @@ export const masqPlugin =
           },
         }))
       : config.globals
+    // Another plugin or the host can still turn sessions off after this point, so check the built config too.
+    const onInit = config.onInit
     return {
       ...config,
+      onInit: async (payload) => {
+        if (!sessionsOn(payload, collection))
+          throw new Error(sessionsError(collection, (payload.collections[collection as never]?.config.auth as { useSessions?: unknown } | undefined)?.useSessions))
+        await onInit?.(payload)
+      },
       globals,
       custom: { ...config.custom, masq: resolved },
       admin: {
@@ -116,8 +136,11 @@ export const masqPlugin =
         const hooks = guarded ? { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), readOnlyGuard] } : c.hooks
         if (c.slug !== collection) return { ...c, hooks }
         const columns = c.admin?.defaultColumns
+        // Our recheck goes first, so a revoked borrowed session is gone before Payload's JWT strategy reads it.
+        const auth = typeof c.auth === 'object' ? { ...c.auth, strategies: [recheckStrategy, ...(c.auth.strategies ?? [])] } : { strategies: [recheckStrategy] }
         return {
           ...c,
+          auth,
           hooks: { ...hooks, beforeOperation: [...(hooks?.beforeOperation ?? []), noBorrowedRefresh] },
           admin: resolved.listColumn && columns ? { ...c.admin, defaultColumns: [...columns, 'masq'] } : c.admin,
           endpoints: [stopEndpoint, searchEndpoint, startEndpoint, ...(c.endpoints || [])],
