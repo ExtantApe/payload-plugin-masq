@@ -87,7 +87,7 @@ export const stopEndpoint: Endpoint = {
     // cookie is gone, by the borrowed token's own claim.
     const borrowed = req.user as (MasqUser & { _sid?: string; collection?: string }) | null
     // Only a genuine claim, on the token that signs in the very user this request is authenticated as.
-    const claim = borrowedClaim(req.payload, req.headers)
+    const claim = borrowed ? borrowedClaim(req.payload, req.headers, String(borrowed.id)) : null
     const claimedBy = claim && borrowed && claim.id === String(borrowed.id) ? claim.by : null
     const live = Boolean(borrowed?.collection === opts.collection && (state ? String(borrowed.id) === state.as : claimedBy))
     if (live && borrowed?._sid) {

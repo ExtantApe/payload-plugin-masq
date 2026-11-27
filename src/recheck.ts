@@ -102,13 +102,20 @@ export const recheckStrategy: AuthStrategy = {
       if (req?.url && req.method === 'POST' && pathOf(req.url) === `${opts.apiRoute}/${opts.collection}/masq/stop`) return { user: null }
       const now = Date.now() / 1000
       const failed: BorrowedClaim[] = []
+      // One recheck per borrowed session, even when its token comes in the cookie and the header both.
+      const outcome = new Map<string, boolean>()
       for (const claim of claims) {
-        try {
-          await recheckClaim(payload, opts, req as PayloadRequest | undefined, claim, now)
-        } catch (err) {
-          payload.logger.error({ err, msg: 'payload-plugin-masq: could not recheck a borrowed session; this request runs signed out' })
-          failed.push(claim)
+        const key = JSON.stringify([claim.by, claim.id, claim.sid, claim.exp])
+        if (!outcome.has(key)) {
+          try {
+            await recheckClaim(payload, opts, req as PayloadRequest | undefined, claim, now)
+            outcome.set(key, true)
+          } catch (err) {
+            payload.logger.error({ err, msg: 'payload-plugin-masq: could not recheck a borrowed session; this request runs signed out' })
+            outcome.set(key, false)
+          }
         }
+        if (!outcome.get(key)) failed.push(claim)
       }
       if (failed.length) args.headers = withoutTokens(payload, headers, failed)
     } catch (err) {

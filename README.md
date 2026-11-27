@@ -84,12 +84,13 @@ Or on MongoDB from the command line (the same change, not tested here):
 mongosh "$DATABASE_URI" --eval 'db.users.updateMany({}, { $set: { sessions: [] } })'
 ```
 
-If your auth collection sets `useSessions: false`, there are no sessions to clear; changing
-`PAYLOAD_SECRET` is then the only way to end those tokens, and it signs everyone out.
+From 0.1.2, Masq refuses to start on an auth collection with `useSessions: false`, because it
+ends a borrowed token by deleting its session. If you ran 0.1.0 or 0.1.1 that way, changing
+`PAYLOAD_SECRET` is the only way to end the old tokens, and it signs everyone out.
 
 ## On its own, and with others
 
-**On its own:** it needs an auth collection (default `users`) and your `canMasquerade`. It doesn't need any other plugin. Auditing is up to your `onStart` and `onStop`.
+**On its own:** it needs an auth collection (default `users`) with sessions on, which is Payload's default, and your `canMasquerade`. It doesn't need any other plugin. Auditing is up to your `onStart` and `onStop`.
 
 **Works with:**
 - **Audit Trail:** call Audit Trail's `recordEvent` from `onStart` and `onStop` (with `masquerade` in its `actions`), and use `masqueraderOf(req)` in its `via` so a change made while masquerading says who really made it.

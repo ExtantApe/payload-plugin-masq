@@ -84,12 +84,17 @@ export function borrowedClaims(payload: Payload, headers: Headers | null | undef
     ...(scheme ? [[auth.slice(scheme[0].length), 'header'] as [string, 'header']] : []),
   ]
   const out: BorrowedClaim[] = []
+  const seen = new Set<string>()
   for (const [token, from] of tokens) {
     const [head, body, sig] = token.split('.')
     if (!head || !body || !sig) continue
+    // The same signed token repeated (or its raw and decoded copies) counts once.
+    const key = `${from} ${head}.${body}`
+    if (seen.has(key)) continue
     const expected = crypto.createHmac('sha256', payload.secret).update(`${head}.${body}`).digest()
     const given = b64(sig)
     if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) continue
+    seen.add(key)
     try {
       if ((JSON.parse(b64(head).toString('utf8')) as { alg?: string }).alg !== 'HS256') continue
       const claims = JSON.parse(b64(body).toString('utf8')) as Record<string, unknown>
@@ -110,8 +115,10 @@ export function borrowedClaims(payload: Payload, headers: Headers | null | undef
   return out
 }
 
-export function borrowedClaim(payload: Payload, headers: Headers | null | undefined): { by: string; id: string } | null {
-  const c = borrowedClaims(payload, headers)[0]
+/** The first borrowed claim, or with `userId`, the claim on the token that signs in that user. */
+export function borrowedClaim(payload: Payload, headers: Headers | null | undefined, userId?: string): { by: string; id: string } | null {
+  const all = borrowedClaims(payload, headers)
+  const c = userId === undefined ? all[0] : all.find((x) => x.id === userId)
   return c ? { by: c.by, id: c.id } : null
 }
 

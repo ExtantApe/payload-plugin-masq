@@ -268,6 +268,45 @@ describe('config', () => {
       }),
     ).rejects.toThrow(/not an auth collection/)
   })
+
+  it('refuses an auth collection with sessions turned off', async () => {
+    await expect(
+      buildConfig({
+        secret: 'x',
+        telemetry: false,
+        db: mongooseAdapter({ url: 'mongodb://127.0.0.1:1/never' }),
+        collections: [{ slug: 'people', auth: { useSessions: false }, fields: [] }],
+        plugins: [masqPlugin({ collection: 'people', canMasquerade: () => true })],
+      }),
+    ).rejects.toThrow(/useSessions: false/)
+  })
+
+  it('refuses a readOnly that is not true or false', () => {
+    for (const readOnly of [0, '', 'no', 'false', null, {}]) expect(() => masqPlugin({ canMasquerade: () => true, readOnly: readOnly as never })({ collections: [{ slug: 'users', auth: true, fields: [] }] } as never)).toThrow(/readOnly/)
+  })
+})
+
+describe('repeated and paired borrowed tokens', () => {
+  it('rechecks a token repeated in the cookie and the header once', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const token = (await masquerade(admin, member))['payload-token']!
+    let calls = 0
+    recheck = () => (calls++, true)
+    const cookie = Array.from({ length: 10 }, () => `payload-token=${token}`).join('; ')
+    expect((await me({ cookie, ...bearer(token) }))?.id).toBe(member.id)
+    expect(calls).toBe(1)
+  })
+
+  it('stop ends the borrowed session Payload signed in with, when another rides in the cookie', async () => {
+    const [admin, a, b] = [await make('admin'), await make('member'), await make('member')]
+    const tokenA = (await masquerade(admin, a))['payload-token']!
+    const tokenB = (await masquerade(admin, b))['payload-token']!
+    // Payload reads the header before the cookie, so this request is signed in as a.
+    const res = await rest('POST', `/${USERS}/masq/stop`, { ...bearer(tokenA), cookie: `payload-token=${tokenB}` })
+    expect(res.status).toBe(200)
+    expect(await sessionsOf(a)).toEqual([])
+    expect(await sessionsOf(b)).toHaveLength(1)
+  })
 })
 
 // Payload's JWT strategy (and jose under it) accepts a token spelled more loosely than a plain read of it would:

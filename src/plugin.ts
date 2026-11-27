@@ -82,6 +82,11 @@ export const masqPlugin =
     const target = (config.collections ?? []).find((c) => c.slug === collection)
     if (!target) throw new Error(`payload-plugin-masq: no collection "${collection}"`)
     if (!target.auth) throw new Error(`payload-plugin-masq: collection "${collection}" is not an auth collection`)
+    // The recheck and the stop endpoint end a borrowed token by deleting its session. Without sessions there is
+    // nothing to delete, and a demoted masquerader would keep the token until it expires.
+    if (typeof target.auth === 'object' && target.auth.useSessions === false)
+      throw new Error(`payload-plugin-masq: collection "${collection}" has useSessions: false; masq needs sessions to end a borrowed session`)
+    if (options.readOnly !== undefined && typeof options.readOnly !== 'boolean') throw new Error('payload-plugin-masq: readOnly must be true or false')
     const components = config.admin?.components ?? {}
     const globals = resolved.readOnly
       ? (config.globals ?? []).map((g) => ({

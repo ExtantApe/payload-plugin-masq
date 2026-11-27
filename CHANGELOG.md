@@ -13,7 +13,13 @@
   token is ignored for that request, so it still runs signed out.
 - The delete reads the target's sessions again in a transaction, so a sign-in the target makes
   while a check is running is kept, and several requests at once report `onStop` once.
-- Masq refuses, at startup, a collection that isn't an auth collection.
+- Masq refuses, at startup, a collection that isn't an auth collection, an auth collection with
+  `useSessions: false` (there is no session to delete, so the recheck could never end a borrowed
+  token), and a `readOnly` that isn't `true` or `false` (before, `0` turned read-only off).
+- A borrowed token repeated in the cookie, or sent in the cookie and the header, is checked once.
+- Stop ends the borrowed session the request is signed in with. Before, with one borrowed token
+  in the header and another in the cookie, it read the cookie's, found it didn't match, and ended
+  neither.
 - A borrowed token is recognized however Payload would accept it. Before, padding or a space in
   the signature, or a space around the cookie name, signed in as the target while Masq didn't see
   the token as borrowed, so the recheck, read-only mode and the refresh refusal all missed it.
