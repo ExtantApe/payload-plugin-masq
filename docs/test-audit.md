@@ -4,7 +4,7 @@ Newest first.
 
 ## 2026-11-26: borrowed sessions are rechecked on every request (K807)
 
-A security fix. Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its first 12 tests failed on the old source. A review then found six more gaps, each with a test that fails on the old source: 18 tests, all passing. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 67.
+A security fix. Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its first 12 tests failed on the old source. A review then found six more gaps, each with a test that fails on the old source: 18 tests, all passing. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 67. A second review found that a borrowed token spelled loosely (padding or whitespace in the signature, spaces around the cookie name) signed in while Masq didn't see it as borrowed. Twelve tests now cover six spellings, each checked after a demotion and under read-only mode; ten failed on the old source (the percent-encoded cookie was already caught and stays as a guard). Suite: 67 → 79.
 
 | Promise | Test |
 | --- | --- |

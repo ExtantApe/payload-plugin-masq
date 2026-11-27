@@ -269,3 +269,34 @@ describe('config', () => {
     ).rejects.toThrow(/not an auth collection/)
   })
 })
+
+// Payload's JWT strategy (and jose under it) accepts a token spelled more loosely than a plain read of it would:
+// padding or whitespace in the signature, spaces around the cookie name, a percent-encoded value. Each spelling
+// must still be seen as borrowed, or the recheck and read-only mode would let it through.
+describe('other spellings of a borrowed token', () => {
+  const spellings: [string, (t: string) => Record<string, string>][] = [
+    ['JWT scheme with = padding', (t) => ({ Authorization: `JWT ${t}=` })],
+    ['Bearer with a space inside the signature', (t) => ({ Authorization: `Bearer ${t.slice(0, -10)} ${t.slice(-10)}` })],
+    ['cookie value with a trailing space', (t) => ({ cookie: `payload-token=${t} ;` })],
+    ['cookie name followed by a space', (t) => ({ cookie: `payload-token =${t}` })],
+    ['cookie name after a tab', (t) => ({ cookie: `x=1;\tpayload-token=${t}` })],
+    ['percent-encoded cookie value', (t) => ({ cookie: `payload-token=%${t.charCodeAt(0).toString(16)}${t.slice(1)}` })],
+  ]
+  for (const [name, spell] of spellings) {
+    it(`ends after the masquerader is demoted: ${name}`, async () => {
+      const [admin, member] = [await make('admin'), await make('member')]
+      const token = (await masquerade(admin, member))['payload-token']!
+      expect((await me(spell(token)))?.id).toBe(member.id)
+      await setRole(admin, 'member')
+      expect(await me(spell(token))).toBeNull()
+      expect(stops).toHaveLength(1)
+    })
+    it(`stays read-only: ${name}`, async () => {
+      const [admin, member] = [await make('admin'), await make('member')]
+      const token = (await masquerade(admin, member))['payload-token']!
+      const res = await rest('PATCH', `/${USERS}/${member.id}`, spell(token), { role: 'staff' })
+      expect(res.status).toBe(403)
+      expect(((await payload.findByID({ collection: 'users', id: member.id })) as unknown as U).role).toBe('member')
+    })
+  }
+})

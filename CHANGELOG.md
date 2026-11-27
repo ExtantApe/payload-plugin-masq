@@ -14,6 +14,9 @@
 - The delete reads the target's sessions again in a transaction, so a sign-in the target makes
   while a check is running is kept, and several requests at once report `onStop` once.
 - Masq refuses, at startup, a collection that isn't an auth collection.
+- A borrowed token is recognized however Payload would accept it. Before, padding or a space in
+  the signature, or a space around the cookie name, signed in as the target while Masq didn't see
+  the token as borrowed, so the recheck, read-only mode and the refresh refusal all missed it.
 
 ### Added
 

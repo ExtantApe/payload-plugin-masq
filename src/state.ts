@@ -46,21 +46,53 @@ export const BORROWED_CLAIM = 'masqBy'
  */
 export type BorrowedClaim = { by: string; id: string; sid: string | null; exp: number | null; token: string; from: 'cookie' | 'header' }
 
-/** Every genuine borrowed claim in the request, cookie first, then the Authorization header. */
+/**
+ * Every value the request carries for the cookie `name`, read at least as loosely as Payload's own JWT strategy
+ * reads it: names trimmed, every occurrence kept (Payload keeps the last), each value both as sent and URI-decoded.
+ */
+function cookieValues(headers: Headers, name: string): string[] {
+  const out: string[] = []
+  for (const part of (headers.get('Cookie') ?? '').split(';')) {
+    const [key, ...rest] = part.split('=')
+    if (key?.trim() !== name) continue
+    const raw = rest.join('=')
+    out.push(raw)
+    try {
+      const decoded = decodeURI(raw)
+      if (decoded !== raw) out.push(decoded)
+    } catch {
+      // Payload skips a value it can't decode; the raw value is still checked.
+    }
+  }
+  return out
+}
+
+/** Base64url decoded the way jose decodes it (Node's decoder, which skips whitespace, padding and other stray characters). */
+const b64 = (s: string) => Buffer.from(s, 'base64url')
+
+/**
+ * Every genuine borrowed claim in the request, cookie first, then the Authorization header. It reads tokens at
+ * least as loosely as Payload's JWT strategy and jose do (padding or whitespace in the signature, spaces around
+ * the cookie name, any letter case in the scheme), so no spelling Payload signs in with escapes the checks.
+ */
 export function borrowedClaims(payload: Payload, headers: Headers | null | undefined): BorrowedClaim[] {
   if (!headers || !payload.secret) return []
   const auth = headers.get('Authorization') ?? ''
-  const tokens = [parseCookies(headers).get(`${payload.config?.cookiePrefix ?? 'payload'}-token`), auth.replace(/^(JWT|Bearer) /, '')]
+  const scheme = /^\s*(?:jwt|bearer)\s+/i.exec(auth)
+  const tokens: [string, 'cookie' | 'header'][] = [
+    ...cookieValues(headers, `${payload.config?.cookiePrefix ?? 'payload'}-token`).map((t) => [t, 'cookie'] as [string, 'cookie']),
+    ...(scheme ? [[auth.slice(scheme[0].length), 'header'] as [string, 'header']] : []),
+  ]
   const out: BorrowedClaim[] = []
-  for (const [i, token] of tokens.entries()) {
-    const [head, body, sig] = token?.split('.') ?? []
+  for (const [token, from] of tokens) {
+    const [head, body, sig] = token.split('.')
     if (!head || !body || !sig) continue
-    const expected = Buffer.from(crypto.createHmac('sha256', payload.secret).update(`${head}.${body}`).digest('base64url'))
-    const given = Buffer.from(sig)
+    const expected = crypto.createHmac('sha256', payload.secret).update(`${head}.${body}`).digest()
+    const given = b64(sig)
     if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) continue
     try {
-      if ((JSON.parse(Buffer.from(head, 'base64url').toString('utf8')) as { alg?: string }).alg !== 'HS256') continue
-      const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>
+      if ((JSON.parse(b64(head).toString('utf8')) as { alg?: string }).alg !== 'HS256') continue
+      const claims = JSON.parse(b64(body).toString('utf8')) as Record<string, unknown>
       const by = claims[BORROWED_CLAIM]
       if (typeof by === 'string' && by)
         out.push({
@@ -68,8 +100,8 @@ export function borrowedClaims(payload: Payload, headers: Headers | null | undef
           id: String(claims.id ?? ''),
           sid: typeof claims.sid === 'string' ? claims.sid : null,
           exp: typeof claims.exp === 'number' ? claims.exp : null,
-          token: token!,
-          from: i === 0 ? 'cookie' : 'header',
+          token,
+          from,
         })
     } catch {
       // Not a JWT we can read: not a borrowed session.
