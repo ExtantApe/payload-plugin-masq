@@ -25,7 +25,10 @@ export function decodeState(secret: string, raw: string | null | undefined): Mas
   if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) return null
   try {
     const s = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Partial<MasqState>
-    return s.by && s.as && s.at && s.until ? (s as MasqState) : null
+    if (!s.by || !s.as || !s.at || !s.until) return null
+    // A cookie issued before the state carried the session id has none; any other shape of it is dropped.
+    const { sid, ...rest } = s
+    return (typeof sid === 'string' && sid ? { ...rest, sid } : rest) as MasqState
   } catch {
     return null
   }

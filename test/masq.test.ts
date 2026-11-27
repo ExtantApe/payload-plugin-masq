@@ -205,11 +205,23 @@ describe('masquerade refusals (fail closed)', () => {
     expect(jar(back)['payload-token']).toBe('')
   })
 
-  it('reports an expired borrowed session on return', async () => {
+  it('reports a borrowed session that had already ended as expired, and a live one it ends as not expired', async () => {
     const own = await login(admin)
-    const c = jar(await call('/:id/masq', { 'payload-token': own }, { id: member.id }))
-    const back = await call('/masq/stop', { [STATE_COOKIE]: c[STATE_COOKIE]!, 'payload-masq-return': c['payload-masq-return']! })
-    expect(await back.json()).toMatchObject({ restored: true })
+    const start = async () => jar(await call('/:id/masq', { 'payload-token': own }, { id: member.id }))
+    const withoutToken = (c: Record<string, string>) => call('/masq/stop', { [STATE_COOKIE]: c[STATE_COOKIE]!, 'payload-masq-return': c['payload-masq-return']! })
+    const borrowedUser = async (c: Record<string, string>) => (await payload.auth({ headers: new Headers({ Authorization: `JWT ${c['payload-token']}` }) })).user
+
+    // The browser lost the borrowed token, but the session is alive: stop ends it, so nothing expired.
+    const alive = await start()
+    expect(await (await withoutToken(alive)).json()).toMatchObject({ restored: true })
+    expect(stopped.at(-1)).toMatchObject({ expired: false, restored: true })
+    expect(await borrowedUser(alive)).toBeNull()
+
+    // The session ended before the return (here, the target's sessions were cleared): expired.
+    const ended = await start()
+    await payload.db.updateOne({ collection: 'users', id: member.id, data: { sessions: [] }, returning: false })
+    expect(await borrowedUser(ended)).toBeNull()
+    expect(await (await withoutToken(ended)).json()).toMatchObject({ restored: true })
     expect(stopped.at(-1)).toMatchObject({ expired: true, restored: true })
   })
 

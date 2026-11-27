@@ -59,6 +59,32 @@ Built for support and troubleshooting.
   `req.user` isn't set yet; use the `masquerader` and `target` it gets. The token is read from
   the cookie even on cross-site requests, the same as Payload's own sign-in. Behind a Next.js
   `basePath`, stopping a revoked masquerade can report `onStop` twice.
+- **Return ends one session.** **Return to my account** ends the borrowed session its masquerade
+  cookie was issued with, also when the browser has lost the borrowed token. `onStop` gets
+  `expired: true` only when that session had already ended. If the delete can't be confirmed, the
+  answer is a 500, the browser is signed out and sent to the login page, `onStop` isn't called and
+  the error is logged; the borrowed session can then live until its hour runs out. Pressing Return
+  again after it has finished reports `onStop` a second time, with `expired: true`.
+- **A database with transactions.** Masq adds and removes a borrowed session inside a transaction,
+  with the user's sessions read again right before the write, so starts, returns and checks that
+  arrive together keep each other's changes. At start-up it begins a transaction, reads in it and
+  commits. If that fails, Payload doesn't start and the error says why. MongoDB needs a replica
+  set for this. Tested on a MongoDB replica set only.
+- **`allowNoTransactions: true` is unsafe when requests overlap.** It skips the start-up check and
+  lets Masq read and then write with no transaction. Two requests that change one user's sessions
+  at the same moment can then undo each other: a masquerade that was returned can come back for
+  the rest of its hour, a sign-in can be lost, and `onStop` can be reported twice. Use it only
+  where that can't happen, such as a single-user development database. On a standalone MongoDB
+  also set `transactionOptions: false` on the adapter.
+- **Payload's own sign-in can overlap a start or a return.** It reads the user, checks the
+  password and writes the user back with the sessions it read first, and Masq can't change that.
+  If the target signs in at the same moment a masquerade of them starts or is returned, the
+  sign-in can put the ended borrowed session back or drop the one that just started. A session
+  that comes back is still borrowed: read-only, checked on every request, never refreshed, and
+  over with its hour. Not tested.
+- **Many changes at once.** A start or return that collides with another change to the same
+  user's sessions waits a short random time and tries again, up to twelve times, about two
+  seconds at most. Tested with eight at once. Past that, the answer is a 500 as described above.
 - Never as yourself, no nesting, no public endpoints: masquerading needs a signed-in user the
   rules allow.
 
@@ -155,6 +181,7 @@ import { MasqueradeBanner } from '@extantape/payload-plugin-masq/rsc'
 | `adminBanner` | `true` | Banner in the admin header. |
 | `adminView` | `true` | Masquerade area and nav link. |
 | `listColumn` | `true` | Masquerade column in the users list (added to `defaultColumns`). |
+| `allowNoTransactions` | `false` | Start on a database that can't run transactions. Unsafe when requests overlap: see the limits above. |
 | `recheck` | | `({ payload, req, masquerader, target }) => boolean`, asked on every request a borrowed session makes, after `canMasquerade`. Only exactly `true` keeps the session; anything else, or a throw, ends it. Use it for checks `canMasquerade` doesn't make, such as a deny list. `req.user` isn't set yet. |
 | `onStart`, `onStop` | | Audit hooks. `onStop` gets `revoked: true` when the per-request check ended the session. |
 | `enabled` | `true` | |

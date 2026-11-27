@@ -2,6 +2,7 @@ import { APIError, type CollectionBeforeOperationHook, type Config, type GlobalB
 
 import { searchEndpoint, startEndpoint, stopEndpoint } from './endpoints.js'
 import { recheckStrategy } from './recheck.js'
+import { assertTransactions } from './revoke.js'
 import { borrowedBy, isMasquerading, sessionsOn } from './state.js'
 import type { MasqPluginOptions, ResolvedMasqOptions } from './types.js'
 
@@ -79,6 +80,7 @@ export const masqPlugin =
       onStart: options.onStart,
       onStop: options.onStop,
       recheck: options.recheck,
+      allowNoTransactions: options.allowNoTransactions ?? false,
       apiRoute: config.routes?.api ?? '/api',
       adminRoute,
     }
@@ -91,6 +93,8 @@ export const masqPlugin =
     const useSessions = typeof target.auth === 'object' ? (target.auth as { useSessions?: unknown }).useSessions : undefined
     if (useSessions != null && useSessions !== true) throw new Error(sessionsError(collection, useSessions))
     if (options.readOnly !== undefined && typeof options.readOnly !== 'boolean') throw new Error('payload-plugin-masq: readOnly must be true or false')
+    if (options.allowNoTransactions !== undefined && typeof options.allowNoTransactions !== 'boolean')
+      throw new Error('payload-plugin-masq: allowNoTransactions must be true or false')
     const components = config.admin?.components ?? {}
     const globals = resolved.readOnly
       ? (config.globals ?? []).map((g) => ({
@@ -115,6 +119,9 @@ export const masqPlugin =
       onInit: async (payload) => {
         if (!sessionsOn(payload, collection))
           throw new Error(sessionsError(collection, (payload.collections[collection as never]?.config.auth as { useSessions?: unknown } | undefined)?.useSessions))
+        // Sessions are changed inside a transaction. Without one, requests that overlap can undo each other, so
+        // start-up stops here unless the host has said it accepts that.
+        if (!resolved.allowNoTransactions) await assertTransactions(payload, collection)
         await onInit?.(payload)
       },
       globals,
