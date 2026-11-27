@@ -365,6 +365,27 @@ describe('sessions turned off after start-up', () => {
 })
 
 describe('stop reports the borrowed session that signed in', () => {
+  it("with the state cookie, leaves the target's own session alone when the target's own token signs in", async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const own = jarOf(await rest('POST', `/${USERS}/login`, {}, { email: member.email, password: PW }))['payload-token']!
+    stops.length = 0
+    await rest('POST', `/${USERS}/masq/stop`, { ...bearer(own), ...cookies(jar) })
+    expect((await me(bearer(own)))?.id).toBe(member.id)
+    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: member.id, expired: true })])
+  })
+
+  it("with the state cookie, doesn't end another masquerader's session that signs in", async () => {
+    const [admin1, admin2, member] = [await make('admin'), await make('admin'), await make('member')]
+    const jar1 = await masquerade(admin1, member)
+    const token2 = (await masquerade(admin2, member))['payload-token']!
+    stops.length = 0
+    await rest('POST', `/${USERS}/masq/stop`, { ...bearer(token2), ...cookies(jar1) })
+    expect((await me(bearer(token2)))?.id).toBe(member.id)
+    expect(await sessionsOf(member)).toHaveLength(2)
+    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin1.id, targetId: member.id, expired: true })])
+  })
+
   it('names the masquerader whose token signed in, when another masquerader rides in the cookie', async () => {
     const [admin1, admin2, member] = [await make('admin'), await make('admin'), await make('member')]
     const token1 = (await masquerade(admin1, member))['payload-token']!

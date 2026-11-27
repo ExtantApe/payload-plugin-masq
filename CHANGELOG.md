@@ -20,7 +20,8 @@
   plugin listed after Masq can't turn sessions off unnoticed. If sessions are off anyway, a
   borrowed token signs nobody in and start refuses.
 - A borrowed token repeated in the cookie, or sent in the cookie and the header, is checked once.
-- Stop ends the borrowed session the request is signed in with, matched by user and session.
+- Stop ends the borrowed session the request is signed in with, matched by user and session, and
+  with the state cookie only when it names that same masquerader and target.
   Before, with one borrowed token in the header and another in the cookie, it could end the wrong
   one or neither, report the wrong masquerader to `onStop`, or, when the target's own token signed
   in, delete the target's own session.

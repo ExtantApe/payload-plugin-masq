@@ -91,7 +91,8 @@ export const stopEndpoint: Endpoint = {
     // Only a genuine claim, on the token that signs in the very user this request is authenticated as.
     const claim = borrowed ? borrowedClaim(req.payload, req.headers, { userId: String(borrowed.id), sid: borrowed._sid }) : null
     const claimedBy = claim && borrowed && claim.id === String(borrowed.id) ? claim.by : null
-    const live = Boolean(borrowed?.collection === opts.collection && (state ? String(borrowed.id) === state.as : claimedBy))
+    // With the state cookie, only the borrowed session it names: same target and same masquerader.
+    const live = Boolean(borrowed?.collection === opts.collection && claimedBy && (!state || (claim!.id === state.as && claimedBy === state.by)))
     if (live && borrowed?._sid) {
       const doc = (await req.payload.findByID({ collection: opts.collection as never, id: borrowed.id, depth: 0, overrideAccess: true, showHiddenFields: true, req })) as {
         sessions?: { id: string }[]
