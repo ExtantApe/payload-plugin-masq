@@ -79,7 +79,9 @@ export const masqPlugin =
       apiRoute: config.routes?.api ?? '/api',
       adminRoute,
     }
-    if (!(config.collections ?? []).some((c) => c.slug === collection)) throw new Error(`payload-plugin-masq: no collection "${collection}"`)
+    const target = (config.collections ?? []).find((c) => c.slug === collection)
+    if (!target) throw new Error(`payload-plugin-masq: no collection "${collection}"`)
+    if (!target.auth) throw new Error(`payload-plugin-masq: collection "${collection}" is not an auth collection`)
     const components = config.admin?.components ?? {}
     const globals = resolved.readOnly
       ? (config.globals ?? []).map((g) => ({
@@ -119,7 +121,7 @@ export const masqPlugin =
         if (c.slug !== collection) return { ...c, hooks }
         const columns = c.admin?.defaultColumns
         // Our recheck goes first, so a revoked borrowed session is gone before Payload's JWT strategy reads it.
-        const auth = c.auth && typeof c.auth === 'object' ? { ...c.auth, strategies: [recheckStrategy, ...(c.auth.strategies ?? [])] } : { strategies: [recheckStrategy] }
+        const auth = typeof c.auth === 'object' ? { ...c.auth, strategies: [recheckStrategy, ...(c.auth.strategies ?? [])] } : { strategies: [recheckStrategy] }
         return {
           ...c,
           auth,

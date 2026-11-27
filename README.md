@@ -49,9 +49,16 @@ Built for support and troubleshooting.
   masquerader and the target loaded fresh, then your `recheck` if you set one. If the answer
   is no (the masquerader was demoted or deleted, or the target changed so the rule refuses),
   the borrowed session is deleted on that request, the request runs signed out, and `onStop`
-  gets `revoked: true`. The cost is two reads by ID on requests that carry a borrowed token,
-  and nothing on any other request. The check is an auth strategy that Masq puts first on the
-  auth collection, so a strategy another plugin puts in front of it later runs before it.
+  gets `revoked: true`. If the check itself fails (a read or the delete throws), the borrowed
+  token is ignored for that request, so it runs signed out. The cost is two reads by ID on
+  requests that carry a borrowed token, and nothing on any other request.
+- **Limits of the check.** It is an auth strategy that Masq puts first on its collection, so an
+  auth collection listed before it, or a strategy another plugin puts in front later, runs
+  before it. Signing the masquerader out everywhere doesn't end a borrowed session; if that
+  should end it, check it in `recheck`. `recheck` runs before anyone is signed in, so
+  `req.user` isn't set yet; use the `masquerader` and `target` it gets. The token is read from
+  the cookie even on cross-site requests, the same as Payload's own sign-in. Behind a Next.js
+  `basePath`, stopping a revoked masquerade can report `onStop` twice.
 - Never as yourself, no nesting, no public endpoints: masquerading needs a signed-in user the
   rules allow.
 
@@ -143,7 +150,7 @@ import { MasqueradeBanner } from '@extantape/payload-plugin-masq/rsc'
 | `adminBanner` | `true` | Banner in the admin header. |
 | `adminView` | `true` | Masquerade area and nav link. |
 | `listColumn` | `true` | Masquerade column in the users list (added to `defaultColumns`). |
-| `recheck` | | `({ payload, req, masquerader, target }) => boolean`, asked on every request a borrowed session makes, after `canMasquerade`. Only exactly `true` keeps the session; anything else, or a throw, ends it. Use it for checks `canMasquerade` doesn't make, such as a deny list. |
+| `recheck` | | `({ payload, req, masquerader, target }) => boolean`, asked on every request a borrowed session makes, after `canMasquerade`. Only exactly `true` keeps the session; anything else, or a throw, ends it. Use it for checks `canMasquerade` doesn't make, such as a deny list. `req.user` isn't set yet. |
 | `onStart`, `onStop` | | Audit hooks. `onStop` gets `revoked: true` when the per-request check ended the session. |
 | `enabled` | `true` | |
 

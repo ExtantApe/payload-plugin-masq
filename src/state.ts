@@ -44,7 +44,7 @@ export const BORROWED_CLAIM = 'masqBy'
  * (`id`). Only a token signed with Payload's secret counts, checked the way Payload checks
  * its own JWTs (HS256), so a forged claim is ignored.
  */
-export type BorrowedClaim = { by: string; id: string; sid: string | null; exp: number | null }
+export type BorrowedClaim = { by: string; id: string; sid: string | null; exp: number | null; token: string; from: 'cookie' | 'header' }
 
 /** Every genuine borrowed claim in the request, cookie first, then the Authorization header. */
 export function borrowedClaims(payload: Payload, headers: Headers | null | undefined): BorrowedClaim[] {
@@ -52,7 +52,7 @@ export function borrowedClaims(payload: Payload, headers: Headers | null | undef
   const auth = headers.get('Authorization') ?? ''
   const tokens = [parseCookies(headers).get(`${payload.config?.cookiePrefix ?? 'payload'}-token`), auth.replace(/^(JWT|Bearer) /, '')]
   const out: BorrowedClaim[] = []
-  for (const token of tokens) {
+  for (const [i, token] of tokens.entries()) {
     const [head, body, sig] = token?.split('.') ?? []
     if (!head || !body || !sig) continue
     const expected = Buffer.from(crypto.createHmac('sha256', payload.secret).update(`${head}.${body}`).digest('base64url'))
@@ -63,7 +63,14 @@ export function borrowedClaims(payload: Payload, headers: Headers | null | undef
       const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>
       const by = claims[BORROWED_CLAIM]
       if (typeof by === 'string' && by)
-        out.push({ by, id: String(claims.id ?? ''), sid: typeof claims.sid === 'string' ? claims.sid : null, exp: typeof claims.exp === 'number' ? claims.exp : null })
+        out.push({
+          by,
+          id: String(claims.id ?? ''),
+          sid: typeof claims.sid === 'string' ? claims.sid : null,
+          exp: typeof claims.exp === 'number' ? claims.exp : null,
+          token: token!,
+          from: i === 0 ? 'cookie' : 'header',
+        })
     } catch {
       // Not a JWT we can read: not a borrowed session.
     }

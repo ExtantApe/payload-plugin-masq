@@ -9,7 +9,11 @@
   `Authorization: Bearer` with no cookie kept it working with nothing to say it should stop.
   Now each request that carries a borrowed token asks `canMasquerade` again, with both users
   loaded fresh. A no deletes the borrowed session, so that request and every later one run
-  signed out.
+  signed out. If the check can't finish, because a read or the delete fails, the borrowed
+  token is ignored for that request, so it still runs signed out.
+- The delete reads the target's sessions again in a transaction, so a sign-in the target makes
+  while a check is running is kept, and several requests at once report `onStop` once.
+- Masq refuses, at startup, a collection that isn't an auth collection.
 
 ### Added
 

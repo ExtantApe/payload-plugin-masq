@@ -174,3 +174,98 @@ describe('the recheck option', () => {
     expect(stops).toEqual([])
   })
 })
+
+describe('fails closed', () => {
+  it('runs signed out when deleting the borrowed session fails', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    await setRole(admin, 'member')
+    const real = payload.db.updateOne
+    payload.db.updateOne = (async () => {
+      throw new Error('database down')
+    }) as typeof real
+    try {
+      expect(await me(bearer(jar['payload-token']!))).toBeNull()
+      expect(await me(cookies(jar))).toBeNull()
+    } finally {
+      payload.db.updateOne = real
+    }
+    expect(stops).toEqual([])
+  })
+
+  it('runs signed out when reading the masquerader fails', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const real = payload.findByID
+    payload.findByID = ((a: { id: string }) => {
+      if (String(a.id) === admin.id) throw new Error('afterRead hook failed')
+      return real.call(payload, a as never)
+    }) as typeof real
+    try {
+      expect(await me(bearer(jar['payload-token']!))).toBeNull()
+      expect(await me(cookies(jar))).toBeNull()
+    } finally {
+      payload.findByID = real
+    }
+    // Once reads work again, the still-allowed session works again.
+    expect((await me(bearer(jar['payload-token']!)))?.id).toBe(member.id)
+  })
+
+  it("keeps the target's own sign-in made while the recheck was running", async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const token = (await masquerade(admin, member))['payload-token']!
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    let entered!: () => void
+    const inside = new Promise<void>((r) => (entered = r))
+    recheck = async () => {
+      entered()
+      await gate
+      return false
+    }
+    const pending = me(bearer(token))
+    await inside
+    recheck = undefined
+    const login = await rest('POST', `/${USERS}/login`, {}, { email: member.email, password: PW })
+    const own = jarOf(login)['payload-token']!
+    open()
+    expect(await pending).toBeNull()
+    expect((await me(bearer(own)))?.id).toBe(member.id)
+    expect(await sessionsOf(member)).toHaveLength(1)
+  })
+
+  it('reports onStop once when several requests revoke the same session at once', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const token = (await masquerade(admin, member))['payload-token']!
+    await setRole(admin, 'member')
+    const users = await Promise.all([1, 2, 3, 4].map(() => me(bearer(token))))
+    expect(users).toEqual([null, null, null, null])
+    expect(stops).toHaveLength(1)
+    expect(await sessionsOf(member)).toEqual([])
+  })
+
+  it('leaves the session for the stop endpoint when the path has a trailing slash', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const token = (await masquerade(admin, member))['payload-token']!
+    await setRole(admin, 'member')
+    const strategy = (payload.collections.users!.config.auth.strategies ?? []).find((s) => s.name === 'masq-recheck')!
+    const headers = new Headers(bearer(token))
+    await strategy.authenticate({ headers, payload, req: { url: `http://localhost:3000/api/${USERS}/masq/stop/`, method: 'POST' } } as never)
+    expect(await sessionsOf(member)).toHaveLength(1)
+    expect(stops).toEqual([])
+  })
+})
+
+describe('config', () => {
+  it('refuses a collection that is not an auth collection', async () => {
+    await expect(
+      buildConfig({
+        secret: 'x',
+        telemetry: false,
+        db: mongooseAdapter({ url: 'mongodb://127.0.0.1:1/never' }),
+        collections: [{ slug: 'people', fields: [] }],
+        plugins: [masqPlugin({ collection: 'people', canMasquerade: () => true })],
+      }),
+    ).rejects.toThrow(/not an auth collection/)
+  })
+})

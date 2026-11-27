@@ -4,7 +4,7 @@ Newest first.
 
 ## 2026-11-26: borrowed sessions are rechecked on every request (K807)
 
-A security fix (D311). Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its 12 tests failed on the old source and all pass now. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 61.
+A security fix. Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its first 12 tests failed on the old source. A review then found six more gaps, each with a test that fails on the old source: 18 tests, all passing. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 67.
 
 | Promise | Test |
 | --- | --- |
@@ -15,6 +15,12 @@ A security fix (D311). Before, a masquerade outlived the masquerader's permissio
 | Return after a revoke restores nothing and reports `onStop` once | `…not restored by stop, and onStop is called once` |
 | `recheck` gets both users, and `true` keeps the session | `the recheck option > passes the masquerader and the target…` |
 | `false`, a truthy non-true, a resolved 1 and a throw all end the session | `the recheck option > ends the session on …` (4) |
+| A failed delete runs the request signed out (cookie and bearer) | `fails closed > …deleting the borrowed session fails` |
+| A failed read of the masquerader runs the request signed out, and the session works again once reads do | `fails closed > …reading the masquerader fails` |
+| The target's own sign-in made during a check survives the revoke | `fails closed > keeps the target's own sign-in…` |
+| Four requests at once revoke the session and report `onStop` once | `fails closed > reports onStop once…` |
+| The stop endpoint with a trailing slash is left to the endpoint | `fails closed > …trailing slash` |
+| A collection that isn't an auth collection is refused at startup | `config > refuses a collection…` |
 | Ordinary sign-ins are never rechecked | `…leaves people's own sign-ins alone` |
 | Control: an allowed session keeps working by cookie and bearer | `…keeps working while the rule still says yes` |
 
