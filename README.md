@@ -44,6 +44,14 @@ Built for support and troubleshooting.
   account** in the banner to clear it, or wait for the cookie to expire.
 - **`canMasquerade` must answer exactly `true`.** A truthy value, or an error it throws, is a
   no: the endpoints answer 403 and the components show nothing.
+- **Checked on every request.** While a borrowed session is live, every request that carries
+  its token, in the cookie or an `Authorization` header, asks `canMasquerade` again with the
+  masquerader and the target loaded fresh, then your `recheck` if you set one. If the answer
+  is no (the masquerader was demoted or deleted, or the target changed so the rule refuses),
+  the borrowed session is deleted on that request, the request runs signed out, and `onStop`
+  gets `revoked: true`. The cost is two reads by ID on requests that carry a borrowed token,
+  and nothing on any other request. The check is an auth strategy that Masq puts first on the
+  auth collection, so a strategy another plugin puts in front of it later runs before it.
 - Never as yourself, no nesting, no public endpoints: masquerading needs a signed-in user the
   rules allow.
 
@@ -103,7 +111,7 @@ export default buildConfig({
           req,
         })
       },
-      onStop: async ({ req, masqueraderId, targetId, expired }) => {
+      onStop: async ({ req, masqueraderId, targetId, expired, revoked }) => {
         /* … */
       },
     }),
@@ -135,7 +143,8 @@ import { MasqueradeBanner } from '@extantape/payload-plugin-masq/rsc'
 | `adminBanner` | `true` | Banner in the admin header. |
 | `adminView` | `true` | Masquerade area and nav link. |
 | `listColumn` | `true` | Masquerade column in the users list (added to `defaultColumns`). |
-| `onStart`, `onStop` | | Audit hooks. |
+| `recheck` | | `({ payload, req, masquerader, target }) => boolean`, asked on every request a borrowed session makes, after `canMasquerade`. Only exactly `true` keeps the session; anything else, or a throw, ends it. Use it for checks `canMasquerade` doesn't make, such as a deny list. |
+| `onStart`, `onStop` | | Audit hooks. `onStop` gets `revoked: true` when the per-request check ended the session. |
 | `enabled` | `true` | |
 
 ## Endpoints

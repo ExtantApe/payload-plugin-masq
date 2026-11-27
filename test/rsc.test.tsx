@@ -186,12 +186,13 @@ describe('Server Components refuse', () => {
     expectRefused(await render(jar))
   })
 
-  it('a masquerader whose permission was removed mid-session: the banner stops naming the target', async () => {
+  it('a masquerader whose permission was removed mid-session: the borrowed session ends and the banner stops naming the target', async () => {
     const jar = await masquerade(member)
     expect((await render(jar)).banner).toContain('Cy Member')
     opts().canMasquerade = (() => false) as never
     const out = await render(jar)
-    expectRefused(out, { banner: 'You may no longer masquerade as this user.' })
+    // The recheck strategy ends the borrowed session on this request, so the banner says it has ended.
+    expectRefused(out, { banner: 'Your masquerade has ended.' })
     expect(out.banner).toContain('Return to my account')
   })
 
@@ -227,7 +228,7 @@ describe('Server Components need an exact true', () => {
       const jar = await masquerade(member)
       opts().canMasquerade = rule as never
       expectRefused(await render(own))
-      expectRefused(await render(jar), { banner: 'You may no longer masquerade as this user.' })
+      expectRefused(await render(jar), { banner: 'Your masquerade has ended.' })
       opts().canMasquerade = allowAdmins as never
     }
   })

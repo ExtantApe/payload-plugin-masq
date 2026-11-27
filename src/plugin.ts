@@ -1,6 +1,7 @@
 import { APIError, type CollectionBeforeOperationHook, type Config, type GlobalBeforeChangeHook, type GlobalBeforeOperationHook, type Plugin } from 'payload'
 
 import { searchEndpoint, startEndpoint, stopEndpoint } from './endpoints.js'
+import { recheckStrategy } from './recheck.js'
 import { borrowedBy, isMasquerading } from './state.js'
 import type { MasqPluginOptions, ResolvedMasqOptions } from './types.js'
 
@@ -74,6 +75,7 @@ export const masqPlugin =
       enabled: true,
       onStart: options.onStart,
       onStop: options.onStop,
+      recheck: options.recheck,
       apiRoute: config.routes?.api ?? '/api',
       adminRoute,
     }
@@ -116,8 +118,11 @@ export const masqPlugin =
         const hooks = guarded ? { ...c.hooks, beforeOperation: [...(c.hooks?.beforeOperation ?? []), readOnlyGuard] } : c.hooks
         if (c.slug !== collection) return { ...c, hooks }
         const columns = c.admin?.defaultColumns
+        // Our recheck goes first, so a revoked borrowed session is gone before Payload's JWT strategy reads it.
+        const auth = c.auth && typeof c.auth === 'object' ? { ...c.auth, strategies: [recheckStrategy, ...(c.auth.strategies ?? [])] } : { strategies: [recheckStrategy] }
         return {
           ...c,
+          auth,
           hooks: { ...hooks, beforeOperation: [...(hooks?.beforeOperation ?? []), noBorrowedRefresh] },
           admin: resolved.listColumn && columns ? { ...c.admin, defaultColumns: [...columns, 'masq'] } : c.admin,
           endpoints: [stopEndpoint, searchEndpoint, startEndpoint, ...(c.endpoints || [])],

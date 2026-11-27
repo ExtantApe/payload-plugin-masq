@@ -2,6 +2,24 @@
 
 Newest first.
 
+## 2026-11-26: borrowed sessions are rechecked on every request (K807)
+
+A security fix (D311). Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its 12 tests failed on the old source and all pass now. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 61.
+
+| Promise | Test |
+| --- | --- |
+| A bearer token with no cookie stops working once the masquerader is demoted; the session is deleted and `onStop` gets `revoked: true` | `…a bearer token with no cookie stops working…` |
+| The cookie stops working once the masquerader is demoted | `…the cookie stops working…` |
+| The session ends when the target changes so the rule says no | `…ends when the target changes…` |
+| The session ends when the masquerader account is deleted | `…ends when the masquerader account is deleted` |
+| Return after a revoke restores nothing and reports `onStop` once | `…not restored by stop, and onStop is called once` |
+| `recheck` gets both users, and `true` keeps the session | `the recheck option > passes the masquerader and the target…` |
+| `false`, a truthy non-true, a resolved 1 and a throw all end the session | `the recheck option > ends the session on …` (4) |
+| Ordinary sign-ins are never rechecked | `…leaves people's own sign-ins alone` |
+| Control: an allowed session keeps working by cookie and bearer | `…keeps working while the rule still says yes` |
+
+Skipped: a separate GraphQL test. The strategy runs in Payload's shared auth step, which the REST `/me` and `payload.auth` tests already exercise.
+
 ## 2026-11-11 (re-read): the masqBy claim must be genuine
 
 The re-read approved 1b4cf61 with one should: the stop endpoint read `masqBy` without checking its signature, so a plain user who sent their real token in `Authorization` and a cookie copy with a forged claim got a false `onStop` entry and lost their own session. The claim now counts only on a token signed with Payload's secret (HS256, as Payload checks its JWTs), and stop uses it only when the token signs in the user the request is authenticated as. Suite: 47 → 49.

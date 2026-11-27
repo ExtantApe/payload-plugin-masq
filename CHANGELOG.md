@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2 (2026-11-26)
+
+### Security
+
+- A borrowed session is checked on every request. Before, a masquerade kept working for the
+  rest of its hour after the masquerader lost the right to it, and a borrowed token sent as
+  `Authorization: Bearer` with no cookie kept it working with nothing to say it should stop.
+  Now each request that carries a borrowed token asks `canMasquerade` again, with both users
+  loaded fresh. A no deletes the borrowed session, so that request and every later one run
+  signed out.
+
+### Added
+
+- `recheck` option: an extra per-request check after `canMasquerade`. Only exactly `true`
+  passes.
+- `onStop` gets `revoked: true` when the per-request check ended the session.
+
 ## 0.1.1 (2026-11-11)
 
 ### Upgrading

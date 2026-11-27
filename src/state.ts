@@ -44,10 +44,14 @@ export const BORROWED_CLAIM = 'masqBy'
  * (`id`). Only a token signed with Payload's secret counts, checked the way Payload checks
  * its own JWTs (HS256), so a forged claim is ignored.
  */
-export function borrowedClaim(payload: Payload, headers: Headers | null | undefined): { by: string; id: string } | null {
-  if (!headers || !payload.secret) return null
+export type BorrowedClaim = { by: string; id: string; sid: string | null; exp: number | null }
+
+/** Every genuine borrowed claim in the request, cookie first, then the Authorization header. */
+export function borrowedClaims(payload: Payload, headers: Headers | null | undefined): BorrowedClaim[] {
+  if (!headers || !payload.secret) return []
   const auth = headers.get('Authorization') ?? ''
   const tokens = [parseCookies(headers).get(`${payload.config?.cookiePrefix ?? 'payload'}-token`), auth.replace(/^(JWT|Bearer) /, '')]
+  const out: BorrowedClaim[] = []
   for (const token of tokens) {
     const [head, body, sig] = token?.split('.') ?? []
     if (!head || !body || !sig) continue
@@ -58,12 +62,18 @@ export function borrowedClaim(payload: Payload, headers: Headers | null | undefi
       if ((JSON.parse(Buffer.from(head, 'base64url').toString('utf8')) as { alg?: string }).alg !== 'HS256') continue
       const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as Record<string, unknown>
       const by = claims[BORROWED_CLAIM]
-      if (typeof by === 'string' && by) return { by, id: String(claims.id ?? '') }
+      if (typeof by === 'string' && by)
+        out.push({ by, id: String(claims.id ?? ''), sid: typeof claims.sid === 'string' ? claims.sid : null, exp: typeof claims.exp === 'number' ? claims.exp : null })
     } catch {
       // Not a JWT we can read: not a borrowed session.
     }
   }
-  return null
+  return out
+}
+
+export function borrowedClaim(payload: Payload, headers: Headers | null | undefined): { by: string; id: string } | null {
+  const c = borrowedClaims(payload, headers)[0]
+  return c ? { by: c.by, id: c.id } : null
 }
 
 /** The masquerader's id if the request carries a genuine borrowed session's token. */

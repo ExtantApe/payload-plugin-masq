@@ -20,7 +20,14 @@ export type MasqStopArgs = {
   expired: boolean
   /** The masquerader's own session was restored. */
   restored: boolean
+  /**
+   * The plugin ended the borrowed session itself, because a recheck said no: `canMasquerade`
+   * (or `recheck`) no longer answered exactly `true`, or either account is gone.
+   */
+  revoked?: boolean
 }
+
+export type MasqRecheckArgs = { payload: Payload; req?: PayloadRequest; masquerader: MasqUser; target: MasqUser }
 
 export type MasqPluginOptions = {
   /** Auth collection to masquerade in. Default `users`. */
@@ -54,13 +61,20 @@ export type MasqPluginOptions = {
   listColumn?: boolean
   /** Add the "Masquerade" view (admin-only user search) and its nav link. Default true. */
   adminView?: boolean
+  /**
+   * An extra check run with `canMasquerade` on every request a borrowed session makes. Only an
+   * answer of exactly `true` keeps the session; anything else, a thrown error included, ends it.
+   * Use it for rules that don't belong in `canMasquerade`, such as a deny list. Keep it cheap:
+   * it runs once per request while masquerading.
+   */
+  recheck?: (args: MasqRecheckArgs) => unknown
   onStart?: (args: MasqStartArgs) => void | Promise<void>
   onStop?: (args: MasqStopArgs) => void | Promise<void>
   enabled?: boolean
 }
 
-export type ResolvedMasqOptions = Required<Omit<MasqPluginOptions, 'onStart' | 'onStop' | 'startPath'>> &
-  Pick<MasqPluginOptions, 'onStart' | 'onStop'> & { startPath: string; apiRoute: string; adminRoute: string }
+export type ResolvedMasqOptions = Required<Omit<MasqPluginOptions, 'onStart' | 'onStop' | 'startPath' | 'recheck'>> &
+  Pick<MasqPluginOptions, 'onStart' | 'onStop' | 'recheck'> & { startPath: string; apiRoute: string; adminRoute: string }
 
 /** The signed state of an active masquerade (in an httpOnly cookie). */
 export type MasqState = {
