@@ -16,7 +16,11 @@ export type MasqStopArgs = {
   req: PayloadRequest
   masqueraderId: string
   targetId: string
-  /** The borrowed session had already ended (expired or signed out). */
+  /**
+   * The borrowed session had already ended before this stop: its hour ran out, or it was signed out or revoked.
+   * `false` when this stop ended it. A state cookie issued before it carried the session id names no session, so
+   * for one of those that arrives without its own borrowed token this is `true` only once the hour has run out.
+   */
   expired: boolean
   /** The masquerader's own session was restored. */
   restored: boolean
@@ -86,4 +90,9 @@ export type MasqState = {
   at: string
   /** Borrowed session ends (ISO). */
   until: string
+  /**
+   * Id of the borrowed session, so stop ends exactly the session this state was issued with. Missing on a cookie
+   * issued by an older version.
+   */
+  sid?: string
 }

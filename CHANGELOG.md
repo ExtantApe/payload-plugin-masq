@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- Return (the stop endpoint) removes the borrowed session in a transaction, the same way the per-request
+  check does, with one shared piece of code. Before, stop read the target's sessions and wrote them back with
+  no transaction, so a sign-in the target made in between was lost, and two stops at once both reported
+  `onStop`. Now a sign-in made meanwhile is kept, and stops that arrive together report `onStop` once.
+- Stop fails closed. If the delete can't be confirmed after three tries, the response is a 500 with
+  `ok: false`, every masquerade cookie is cleared, the masquerader's own token is not handed back, the browser
+  goes to the login page, `onStop` is not called, and the failure is logged as an error with the masquerader
+  and target ids. The borrowed session may then still be alive until its hour runs out; the per-request check
+  still covers it. Before, the error left the borrowed token in the browser.
+- `onStop`'s `expired` is true only when the borrowed session had really ended before the stop. Before, any
+  stop where the state cookie and the signed-in token didn't match, or where the browser had lost the
+  borrowed token, reported `expired: true` while the session was still alive, and left it alive.
+- The state cookie now carries the borrowed session's id, and stop ends exactly that session: also when the
+  browser lost the borrowed token, and when another token signs in beside the cookie. That other session is
+  never ended or reported. A state cookie issued by 0.1.2 or earlier has no session id and lasts up to 24
+  hours: with it, stop ends the signed-in borrowed session only when masquerader and target match, as in
+  0.1.2, and otherwise ends nothing and reports `expired: true` only once the hour is over.
+
+### Known limits
+
+- A second stop that arrives after the first has finished finds the session gone and reports `onStop` again
+  with `expired: true`. Only stops that overlap are reported once.
+
+Tested with Vitest against an in-memory MongoDB replica set, through Payload's REST router: 17 new tests in
+`test/stop.test.ts` (11 failed on 0.1.2) and three older tests updated, 107 in all. Not tested: Postgres or
+SQLite, a database without transactions, a real browser, and a real database outage (the failed delete is
+simulated by making the write throw).
+
 ## 0.1.2 (2026-11-26)
 
 ### Security
@@ -11,8 +43,10 @@
   loaded fresh. A no deletes the borrowed session, so that request and every later one run
   signed out. If the check can't finish, because a read or the delete fails, the borrowed
   token is ignored for that request, so it still runs signed out.
-- The delete reads the target's sessions again in a transaction, so a sign-in the target makes
-  while a check is running is kept, and several requests at once report `onStop` once.
+- The per-request check's delete reads the target's sessions again in a transaction, so a sign-in
+  the target makes while a check is running is kept, and several requests at once report `onStop`
+  once. This covered the check only. Stop still deleted without a transaction in 0.1.2; see
+  Unreleased.
 - Masq refuses a collection that isn't an auth collection, a `useSessions` other than `true` or
   left out (with sessions off there is no session to delete, so the recheck could never end a
   borrowed token), and a `readOnly` that isn't `true` or `false` (before, `0` turned read-only

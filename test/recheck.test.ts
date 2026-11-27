@@ -372,7 +372,9 @@ describe('stop reports the borrowed session that signed in', () => {
     stops.length = 0
     await rest('POST', `/${USERS}/masq/stop`, { ...bearer(own), ...cookies(jar) })
     expect((await me(bearer(own)))?.id).toBe(member.id)
-    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: member.id, expired: true })])
+    // The borrowed session the state cookie names was alive, so this stop ended it: not expired.
+    expect(await sessionsOf(member)).toHaveLength(1)
+    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: member.id, expired: false })])
   })
 
   it("with the state cookie, doesn't end another masquerader's session that signs in", async () => {
@@ -382,8 +384,10 @@ describe('stop reports the borrowed session that signed in', () => {
     stops.length = 0
     await rest('POST', `/${USERS}/masq/stop`, { ...bearer(token2), ...cookies(jar1) })
     expect((await me(bearer(token2)))?.id).toBe(member.id)
-    expect(await sessionsOf(member)).toHaveLength(2)
-    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin1.id, targetId: member.id, expired: true })])
+    // Only the session the state cookie names ends, and it was alive, so it is not reported as expired.
+    expect(await me(bearer(jar1['payload-token']!))).toBeNull()
+    expect(await sessionsOf(member)).toHaveLength(1)
+    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin1.id, targetId: member.id, expired: false })])
   })
 
   it('names the masquerader whose token signed in, when another masquerader rides in the cookie', async () => {

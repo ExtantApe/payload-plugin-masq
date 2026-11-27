@@ -3,6 +3,7 @@ import { addSessionToUser, parseCookies } from 'payload/shared'
 
 import { BORROWED_CLAIM, borrowedClaim, cookie, encodeState, isMasquerading, masqOptions, masqStateOf, RETURN_COOKIE, sessionsOn, STATE_COOKIE } from './state.js'
 import { mayMasquerade } from './access.js'
+import { revoke } from './revoke.js'
 import type { MasqUser } from './types.js'
 
 const STATE_SECONDS = 24 * 60 * 60
@@ -61,7 +62,7 @@ export const startEndpoint: Endpoint = {
       tokenExpiration: opts.duration,
     })
     const now = Date.now()
-    const state = { by: String(user.id), as: id, at: new Date(now).toISOString(), until: new Date(now + opts.duration * 1000).toISOString() }
+    const state = { by: String(user.id), as: id, at: new Date(now).toISOString(), until: new Date(now + opts.duration * 1000).toISOString(), sid }
     await opts.onStart?.({ req, masquerader: user, target, reason })
     return json({ ok: true, redirect: opts.startPath }, [
       cookie(req.payload, opts.collection, tokenCookie(req), token, opts.duration),
@@ -70,6 +71,12 @@ export const startEndpoint: Endpoint = {
       cookie(req.payload, opts.collection, STATE_COOKIE, encodeState(req.payload.secret, state), STATE_SECONDS),
     ])
   },
+}
+
+/** A user id from a cookie, as the collection stores it: a number where the ids are numbers. */
+function idOf(req: PayloadRequest, id: string): number | string {
+  const type = req.payload.collections[masqOptions(req.payload).collection as never]?.customIDType ?? req.payload.db.defaultIDType
+  return type === 'number' ? Number(id) : id
 }
 
 /** POST /api/<collection>/masq/stop: end the borrowed session and restore the masquerader's own. */
@@ -85,34 +92,69 @@ export const stopEndpoint: Endpoint = {
     const stopPath = `${opts.apiRoute}/${opts.collection}/masq/stop`
     const clear = [cookie(req.payload, opts.collection, RETURN_COOKIE, '', -1, stopPath), cookie(req.payload, opts.collection, STATE_COOKIE, '', -1)]
 
-    // End the borrowed session if it is still alive: named by the state cookie, or, if that
-    // cookie is gone, by the borrowed token's own claim.
+    const clearAll = [...clear, cookie(req.payload, opts.collection, tokenCookie(req), '', -1)]
+    const login = `${opts.adminRoute}/login`
+
+    // The borrowed session this request is signed in with, if any. Only a genuine claim counts, on the token
+    // that signs in the very user and session this request is authenticated as.
     const borrowed = req.user as (MasqUser & { _sid?: string; collection?: string }) | null
-    // Only a genuine claim, on the token that signs in the very user this request is authenticated as.
-    const claim = borrowed ? borrowedClaim(req.payload, req.headers, { userId: String(borrowed.id), sid: borrowed._sid }) : null
-    const claimedBy = claim && borrowed && claim.id === String(borrowed.id) ? claim.by : null
-    // With the state cookie, only the borrowed session it names: same target and same masquerader.
-    const live = Boolean(borrowed?.collection === opts.collection && claimedBy && (!state || (claim!.id === state.as && claimedBy === state.by)))
-    if (live && borrowed?._sid) {
-      const doc = (await req.payload.findByID({ collection: opts.collection as never, id: borrowed.id, depth: 0, overrideAccess: true, showHiddenFields: true, req })) as {
-        sessions?: { id: string }[]
+    const claim = borrowed?.collection === opts.collection ? borrowedClaim(req.payload, req.headers, { userId: String(borrowed.id), sid: borrowed._sid }) : null
+    const inUse = claim && borrowed?._sid && claim.id === String(borrowed.id) ? { id: borrowed.id, sid: borrowed._sid, by: claim.by } : null
+
+    // The one session this stop ends. With the state cookie it is the session the cookie names, by its id, and
+    // never another one that happens to be signed in. A cookie from before the state carried the id names the
+    // signed-in borrowed session only when masquerader and target both match. With no state cookie it is the
+    // signed-in borrowed session.
+    const sameMasquerade = Boolean(state && inUse && String(inUse.id) === state.as && inUse.by === state.by)
+    const ending: { id: number | string; sid: string } | null = !state
+      ? inUse
+      : state.sid
+        ? { id: sameMasquerade && inUse!.sid === state.sid ? inUse!.id : idOf(req, state.as), sid: state.sid }
+        : sameMasquerade
+          ? inUse
+          : null
+    // Whether this request was signed in with that very session, so it was alive a moment ago.
+    const wasAlive = Boolean(ending && inUse && ending.sid === inUse.sid && String(ending.id) === String(inUse.id))
+
+    // The delete reads the sessions again in a transaction, and answers whether this call removed the session.
+    let removed = false
+    if (ending) {
+      try {
+        removed = await revoke(req.payload, opts.collection, ending.id, ending.sid)
+      } catch (err) {
+        // Fail closed. The borrowed session may still be alive, so nothing here claims it ended: no onStop, no
+        // success, and the masquerader's own token is not handed back while the borrowed one might still work.
+        // The browser loses every masquerade cookie and goes to the login page. The per-request recheck and the
+        // session's own hour still bound the borrowed token.
+        req.payload.logger.error({
+          err,
+          masqueraderId: state?.by ?? inUse?.by,
+          targetId: String(ending.id),
+          msg: 'payload-plugin-masq: could not end a borrowed session on stop; it may still be alive until its hour runs out. The browser was signed out.',
+        })
+        return json(
+          { ok: false, restored: false, redirect: login, errors: [{ message: 'The masquerade could not be confirmed as ended. You have been signed out. Sign in again.' }] },
+          clearAll,
+          500,
+        )
       }
-      await req.payload.db.updateOne({
-        collection: opts.collection,
-        id: borrowed.id,
-        data: { sessions: (doc.sessions ?? []).filter((s) => s.id !== borrowed._sid) },
-        req,
-        returning: false,
-      })
     }
 
     // Restore only a still-valid token of the same masquerader who may still masquerade.
     const restored = state && own ? await req.payload.auth({ headers: new Headers({ Authorization: `JWT ${own}` }) }).catch(() => null) : null
     const user = (restored?.user ?? null) as MasqUser | null
     const ok = Boolean(state && user && String(user.id) === state.by && (await mayMasquerade(opts, { payload: req.payload, user: user! })))
-    if (state) await opts.onStop?.({ req, masqueraderId: state.by, targetId: state.as, expired: !live, restored: ok })
-    else if (live && claimedBy) await opts.onStop?.({ req, masqueraderId: claimedBy, targetId: String(borrowed!.id), expired: false, restored: false })
-    if (!ok) return json({ ok: true, restored: false, redirect: `${opts.adminRoute}/login` }, [...clear, cookie(req.payload, opts.collection, tokenCookie(req), '', -1)])
+
+    // One report per ended session. A request that was signed in with the session but didn't remove it lost to
+    // another request ending it at the same moment, and that one reports.
+    if (state) {
+      const hourOver = Date.now() >= Date.parse(state.until)
+      // Expired only when the session the state names had really ended before this stop: it was already gone,
+      // or its hour was over. With no session named and none ended, only the hour can say so.
+      const expired = wasAlive ? false : ending ? !removed || hourOver : hourOver
+      if (!wasAlive || removed) await opts.onStop?.({ req, masqueraderId: state.by, targetId: state.as, expired, restored: ok })
+    } else if (inUse && removed) await opts.onStop?.({ req, masqueraderId: inUse.by, targetId: String(inUse.id), expired: false, restored: false })
+    if (!ok) return json({ ok: true, restored: false, redirect: login }, clearAll)
     const seconds = req.payload.collections[opts.collection as never]!.config.auth.tokenExpiration
     return json({ ok: true, restored: true, redirect: `${opts.adminRoute}/collections/${opts.collection}/${state!.as}` }, [
       ...clear,

@@ -2,6 +2,25 @@
 
 Newest first.
 
+## 2026-11-26: stop deletes in a transaction, fails closed and reports `expired` accurately (K810)
+
+A security fix. New file `test/stop.test.ts`, written first: 11 of its 17 tests failed on 0.1.2, and the other six are controls that passed before and after. Three older tests expected `expired: true` for a session that was alive, and now expect `false` and the session ended: two in `test/recheck.test.ts` and one in `test/masq.test.ts`. Suite: 90 → 107.
+
+| Promise | Test |
+| --- | --- |
+| A sign-in the target makes while stop is running is kept | `stop removes the borrowed session in a transaction > keeps the target's own sign-in…` |
+| Four stops at once report `onStop` once, with and without the state cookie, and each may restore | `…reports onStop once when several stops arrive at once` (2) |
+| A failed delete: 500, `ok: false`, all cookies cleared, no restore, login redirect, no `onStop`, an error log | `stop fails closed… > signs the browser out…` (3: with the state cookie, without it, state cookie and no token) |
+| `expired: false` when state and token match | `onStop's expired flag > is false when the state cookie and the borrowed token match` |
+| A mismatched token beside the state cookie: the named session ends, `expired: false`, the other session is untouched (the target's own, another masquerader's, another target's) | `onStop's expired flag > is false when…` (3) |
+| `expired: true` when the named session had ended, whatever else signs in | `…is true when the session the state cookie names has ended…` |
+| No state cookie: the claim names the masquerader, `expired: false`, `restored: false` | `…is false, with the masquerader from the claim…` |
+| A token past its hour reports `expired: true` | `…is true when the borrowed token has run out` (a one-second masquerade and a real wait) |
+| The browser lost the token: an alive session is ended (`false`), a gone one reports `true` | `…lost the borrowed token…` (2), `masquerade refusals > reports a borrowed session that had already ended…` |
+| A state cookie with no session id still ends a matching session, and on a mismatch ends nothing and doesn't say expired | `a state cookie issued before it carried the session id > …` (2) |
+
+Skipped: the fail-closed case once per way the delete can fail (begin, read, write, commit). They share one catch, and the write is the step the recheck's own test already fails. A non-overlapping repeat of stop reporting `onStop` twice is a known limit, written in the CHANGELOG, with no test. Not covered here and for the lead: Postgres and SQLite, where the id from the state cookie is turned into a number and that conversion has no test.
+
 ## 2026-11-26: borrowed sessions are rechecked on every request (K807)
 
 A security fix. Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its first 12 tests failed on the old source. A review then found six more gaps, each with a test that fails on the old source: 18 tests, all passing. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 67. A second review found that a borrowed token spelled loosely (padding or whitespace in the signature, spaces around the cookie name) signed in while Masq didn't see it as borrowed. Twelve tests now cover six spellings, each checked after a demotion and under read-only mode; ten failed on the old source (the percent-encoded cookie was already caught and stays as a guard). Suite: 67 → 79. A third review found that with `useSessions: false` the recheck did nothing, that `readOnly: 0` turned read-only off, that a repeated token was rechecked once per copy, and that stop picked the wrong claim when two borrowed tokens came in. Four tests, each failing on the old source, now cover them. Suite: 79 → 83. A fourth review found that the sessions check missed `0` and `''`, a plugin listed after Masq, and a built config changed before start-up, and that stop matched the claim by user only, so with two tokens for one target it could report the wrong masquerader or delete the target's own session. Each now has a test that fails on the old source: two config refusals, a refusal at start-up, a runtime check with sessions turned off after start-up, and two stop cases. Suite: 83 → 88. A fifth review found that with the state cookie present, stop still matched by user only. Two tests, both failing on the old source, cover the target's own token and another masquerader's token signing in beside the state cookie. Suite: 88 → 90.

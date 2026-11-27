@@ -59,6 +59,12 @@ Built for support and troubleshooting.
   `req.user` isn't set yet; use the `masquerader` and `target` it gets. The token is read from
   the cookie even on cross-site requests, the same as Payload's own sign-in. Behind a Next.js
   `basePath`, stopping a revoked masquerade can report `onStop` twice.
+- **Return ends one session.** **Return to my account** ends the borrowed session its masquerade
+  cookie was issued with, also when the browser has lost the borrowed token. `onStop` gets
+  `expired: true` only when that session had already ended. If the delete can't be confirmed, the
+  answer is a 500, the browser is signed out and sent to the login page, `onStop` isn't called and
+  the error is logged; the borrowed session can then live until its hour runs out. Pressing Return
+  again after it has finished reports `onStop` a second time, with `expired: true`.
 - Never as yourself, no nesting, no public endpoints: masquerading needs a signed-in user the
   rules allow.
 
