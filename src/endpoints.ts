@@ -1,9 +1,9 @@
 import { addDataAndFileToRequest, APIError, getFieldsToSign, jwtSign, type Endpoint, type PayloadRequest, type Where } from 'payload'
-import { addSessionToUser, parseCookies } from 'payload/shared'
+import { parseCookies } from 'payload/shared'
 
 import { BORROWED_CLAIM, borrowedClaim, cookie, encodeState, isMasquerading, masqOptions, masqStateOf, RETURN_COOKIE, sessionsOn, STATE_COOKIE } from './state.js'
 import { mayMasquerade } from './access.js'
-import { revoke } from './revoke.js'
+import { addSession, revoke } from './revoke.js'
 import type { MasqUser } from './types.js'
 
 const STATE_SECONDS = 24 * 60 * 60
@@ -54,7 +54,19 @@ export const startEndpoint: Endpoint = {
     if (!(await mayMasquerade(opts, { payload: req.payload, user, target }))) throw new APIError('You may not masquerade as this user.', 403, undefined, true)
 
     const collectionConfig = req.payload.collections[opts.collection as never]!.config
-    const { sid } = await addSessionToUser({ collectionConfig, payload: req.payload, req, user: target as never })
+    // The target was read before canMasquerade was asked, so that copy's sessions may be out of date by now. The
+    // new session is added to the sessions as they are at this moment, read again inside a transaction.
+    let sid: string | null
+    try {
+      sid = await addSession(req.payload, opts.collection, target.id, collectionConfig.auth.tokenExpiration)
+    } catch (err) {
+      req.payload.logger.error({ err, masqueraderId: String(user.id), targetId: id, msg: 'payload-plugin-masq: could not start a masquerade; no borrowed session was handed out.' })
+      throw new APIError('The masquerade could not be started. Try again.', 500, undefined, true)
+    }
+    if (!sid) throw new APIError('User not found.', 404, undefined, true)
+    // As Payload's own sign-in leaves the user it hands to hooks.
+    target.collection = opts.collection
+    target._strategy = 'local-jwt'
     const { token } = await jwtSign({
       // Marked as borrowed, so it stays read-only and can't be refreshed even without the state cookie.
       fieldsToSign: { ...getFieldsToSign({ collectionConfig, email: String(target.email ?? ''), sid, user: target as never }), [BORROWED_CLAIM]: String(user.id) },
@@ -147,13 +159,18 @@ export const stopEndpoint: Endpoint = {
 
     // One report per ended session. A request that was signed in with the session but didn't remove it lost to
     // another request ending it at the same moment, and that one reports.
-    if (state) {
-      const hourOver = Date.now() >= Date.parse(state.until)
-      // Expired only when the session the state names had really ended before this stop: it was already gone,
-      // or its hour was over. With no session named and none ended, only the hour can say so.
-      const expired = wasAlive ? false : ending ? !removed || hourOver : hourOver
-      if (!wasAlive || removed) await opts.onStop?.({ req, masqueraderId: state.by, targetId: state.as, expired, restored: ok })
-    } else if (inUse && removed) await opts.onStop?.({ req, masqueraderId: inUse.by, targetId: String(inUse.id), expired: false, restored: false })
+    // The session is already ended, so an onStop that throws is logged and the browser still gets its cookies.
+    try {
+      if (state) {
+        const hourOver = Date.now() >= Date.parse(state.until)
+        // Expired only when the session the state names had really ended before this stop: it was already gone,
+        // or its hour was over. With no session named and none ended, only the hour can say so.
+        const expired = wasAlive ? false : ending ? !removed || hourOver : hourOver
+        if (!wasAlive || removed) await opts.onStop?.({ req, masqueraderId: state.by, targetId: state.as, expired, restored: ok })
+      } else if (inUse && removed) await opts.onStop?.({ req, masqueraderId: inUse.by, targetId: String(inUse.id), expired: false, restored: false })
+    } catch (err) {
+      req.payload.logger.error({ err, masqueraderId: state?.by ?? inUse?.by, targetId: state?.as ?? (inUse ? String(inUse.id) : undefined), msg: 'payload-plugin-masq: onStop failed after a masquerade was stopped' })
+    }
     if (!ok) return json({ ok: true, restored: false, redirect: login }, clearAll)
     const seconds = req.payload.collections[opts.collection as never]!.config.auth.tokenExpiration
     return json({ ok: true, restored: true, redirect: `${opts.adminRoute}/collections/${opts.collection}/${state!.as}` }, [

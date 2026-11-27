@@ -17,6 +17,10 @@ let config: Promise<SanitizedConfig>
 let payload: Payload
 let mongo: MongoMemoryReplSet
 const stops: MasqStopArgs[] = []
+/** Set by a test to hold canMasquerade while it decides about a target, after start has read that target. */
+let whileChecking: ((targetId: string) => Promise<void>) | undefined
+/** Set by a test to make the host's onStop throw. */
+let onStopThrows = false
 let n = 0
 
 type Jar = Record<string, string>
@@ -102,7 +106,18 @@ beforeAll(async () => {
         fields: [{ name: 'role', type: 'select', options: ['admin', 'member'], defaultValue: 'member' }],
       },
     ],
-    plugins: [masqPlugin({ canMasquerade: ({ user, target }) => user.role === 'admin' && target?.role !== 'admin', onStop: (a) => void stops.push(a) })],
+    plugins: [
+      masqPlugin({
+        canMasquerade: async ({ user, target }) => {
+          if (target) await whileChecking?.(String(target.id))
+          return user.role === 'admin' && target?.role !== 'admin'
+        },
+        onStop: (a) => {
+          stops.push(a)
+          if (onStopThrows) throw new Error('audit log down')
+        },
+      }),
+    ],
   })
   payload = await getPayload({ config })
 }, 120_000)
@@ -114,6 +129,244 @@ afterAll(async () => {
 
 beforeEach(() => {
   stops.length = 0
+  whileChecking = undefined
+  onStopThrows = false
+})
+
+const start = (own: string, as: U) => rest('POST', `/${USERS}/${as.id}/masq`, cookies({ 'payload-token': own }), {})
+
+describe('start adds the borrowed session to the sessions as they are now', () => {
+  it('leaves a session ended that was stopped while start was being checked', async () => {
+    const [admin1, admin2, member] = [await make('admin'), await make('admin'), await make('member')]
+    const first = await masquerade(admin1, member)
+    const own2 = await signIn(admin2)
+    // Hold admin2's start after it has read the target, while canMasquerade decides.
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    let entered!: () => void
+    const inside = new Promise<void>((r) => (entered = r))
+    let held = false
+    whileChecking = async (targetId) => {
+      if (held || targetId !== member.id) return
+      held = true
+      entered()
+      await gate
+    }
+    let res: Response
+    try {
+      const pending = start(own2, member)
+      await inside
+      // admin1 returns meanwhile, which ends the first borrowed session.
+      expect(await bodyOf(await stop(cookies(browser(first))))).toMatchObject({ ok: true, restored: true })
+      expect(await sessionsOf(member)).toEqual([])
+      open()
+      res = await pending
+    } finally {
+      open()
+    }
+    expect(res.status).toBe(200)
+    // The stopped session stays ended, and the new one works.
+    expect(await me(bearer(first['payload-token']!))).toBeNull()
+    expect((await me(bearer(jarOf(res)['payload-token']!)))?.id).toBe(member.id)
+    expect(await sessionsOf(member)).toHaveLength(1)
+  })
+
+  it("keeps the target's own sign-in made while start was being checked", async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const own = await signIn(admin)
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    let entered!: () => void
+    const inside = new Promise<void>((r) => (entered = r))
+    let held = false
+    whileChecking = async (targetId) => {
+      if (held || targetId !== member.id) return
+      held = true
+      entered()
+      await gate
+    }
+    let res: Response
+    let theirs: string
+    try {
+      const pending = start(own, member)
+      await inside
+      theirs = await signIn(member)
+      open()
+      res = await pending
+    } finally {
+      open()
+    }
+    expect(res.status).toBe(200)
+    expect((await me(bearer(theirs)))?.id).toBe(member.id)
+    expect((await me(bearer(jarOf(res)['payload-token']!)))?.id).toBe(member.id)
+    expect(await sessionsOf(member)).toHaveLength(2)
+  })
+
+  it('gives every masquerader a working session when several start on one target at once', async () => {
+    const admins = await Promise.all([1, 2, 3, 4].map(() => make('admin')))
+    const member = await make('member')
+    const owns = await Promise.all(admins.map((a) => signIn(a)))
+    // Hold every start until all of them have read the target.
+    let arrived = 0
+    let open!: () => void
+    const gate = new Promise<void>((r) => (open = r))
+    whileChecking = async (targetId) => {
+      if (targetId !== member.id) return
+      if (++arrived >= admins.length) open()
+      await gate
+    }
+    let responses: Response[]
+    try {
+      responses = await Promise.all(owns.map((own) => start(own, member)))
+    } finally {
+      open()
+    }
+    whileChecking = undefined
+    for (const res of responses) {
+      expect(res.status).toBe(200)
+      expect((await me(bearer(jarOf(res)['payload-token']!)))?.id).toBe(member.id)
+    }
+    expect(await sessionsOf(member)).toHaveLength(admins.length)
+  })
+
+  it('answers 404 when the target was deleted while start was being checked', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const own = await signIn(admin)
+    whileChecking = async (targetId) => {
+      if (targetId !== member.id) return
+      whileChecking = undefined
+      await payload.delete({ collection: 'users', id: member.id })
+    }
+    const res = await start(own, member)
+    expect(res.status).toBe(404)
+    expect(jarOf(res)['payload-token']).toBeUndefined()
+  })
+})
+
+describe('many stops at once on one target', () => {
+  it('all eight answer 200, onStop is reported once and the session is gone', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const eight = Array.from({ length: 8 })
+    const responses = await allSignedInFirst(8, () => Promise.all(eight.map(() => stop(cookies(browser(jar))))))
+    for (const res of responses) {
+      expect(res.status).toBe(200)
+      expect(await bodyOf(res)).toMatchObject({ ok: true, restored: true })
+    }
+    expect(stops).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: member.id, expired: false, restored: true })])
+    expect(await me(bearer(jar['payload-token']!))).toBeNull()
+    expect(await sessionsOf(member)).toEqual([])
+  })
+
+  it('eight masquerades of one target stopped at once all end, and only those', async () => {
+    const admins = await Promise.all(Array.from({ length: 8 }, () => make('admin')))
+    const member = await make('member')
+    const jars: (Jar & { own: string })[] = []
+    for (const a of admins) jars.push(await masquerade(a, member))
+    const theirs = await signIn(member)
+    const responses = await allSignedInFirst(8, () => Promise.all(jars.map((jar) => stop(cookies(browser(jar))))))
+    for (const res of responses) {
+      expect(res.status).toBe(200)
+      expect(await bodyOf(res)).toMatchObject({ ok: true, restored: true })
+    }
+    expect(stops).toHaveLength(8)
+    expect(new Set(stops.map((s) => s.masqueraderId))).toEqual(new Set(admins.map((a) => a.id)))
+    for (const jar of jars) expect(await me(bearer(jar['payload-token']!))).toBeNull()
+    // The target's own sign-in is the one session left.
+    expect((await me(bearer(theirs)))?.id).toBe(member.id)
+    expect(await sessionsOf(member)).toHaveLength(1)
+  })
+})
+
+describe('stop when a step around the delete fails', () => {
+  it('tries again when beginning the transaction throws', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const real = payload.db.beginTransaction
+    let failures = 2
+    payload.db.beginTransaction = (async () => {
+      if (failures-- > 0) throw new Error('no connection')
+      return real.call(payload.db)
+    }) as typeof real
+    let res: Response
+    try {
+      res = await stop(cookies(browser(jar)))
+    } finally {
+      payload.db.beginTransaction = real
+    }
+    expect(res.status).toBe(200)
+    expect(await bodyOf(res)).toMatchObject({ ok: true, restored: true })
+    expect(await sessionsOf(member)).toEqual([])
+    expect(stops).toHaveLength(1)
+  })
+
+  it('fails closed when beginning the transaction keeps throwing', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const real = payload.db.beginTransaction
+    payload.db.beginTransaction = (async () => {
+      throw new Error('no connection')
+    }) as typeof real
+    let res: Response
+    try {
+      res = await stop(cookies(browser(jar)))
+    } finally {
+      payload.db.beginTransaction = real
+    }
+    expect(res.status).toBe(500)
+    expect(await bodyOf(res)).toMatchObject({ ok: false, restored: false, redirect: '/admin/login' })
+    const set = jarOf(res)
+    expect(set['payload-token']).toBe('')
+    expect(set[STATE_COOKIE]).toBe('')
+    expect(set[RETURN]).toBe('')
+    expect(stops).toEqual([])
+  })
+
+  it('still clears the cookies and restores the masquerader when onStop throws', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const logged = vi.spyOn(payload.logger, 'error')
+    onStopThrows = true
+    const res = await stop(cookies(browser(jar)))
+    expect(res.status).toBe(200)
+    expect(await bodyOf(res)).toMatchObject({ ok: true, restored: true })
+    const set = jarOf(res)
+    expect(set['payload-token']).toBe(jar.own)
+    expect(set[STATE_COOKIE]).toBe('')
+    expect(set[RETURN]).toBe('')
+    expect(await sessionsOf(member)).toEqual([])
+    expect(logged.mock.calls.some(([entry]) => /onStop failed/.test(String((entry as { msg?: string }).msg)))).toBe(true)
+    logged.mockRestore()
+  })
+
+  it('logs it when a commit that gave no answer leaves nobody to report onStop', async () => {
+    const [admin, member] = [await make('admin'), await make('member')]
+    const jar = await masquerade(admin, member)
+    const logged = vi.spyOn(payload.logger, 'error')
+    // The first commit lands and then throws, as when the connection drops before the answer arrives.
+    const real = payload.db.commitTransaction
+    let first = true
+    payload.db.commitTransaction = (async (id: never) => {
+      await real.call(payload.db, id)
+      if (first) {
+        first = false
+        throw new Error('connection lost before the answer')
+      }
+    }) as typeof real
+    let res: Response
+    try {
+      res = await stop(cookies(browser(jar)))
+    } finally {
+      payload.db.commitTransaction = real
+    }
+    expect(res.status).toBe(200)
+    expect(await bodyOf(res)).toMatchObject({ ok: true, restored: true })
+    expect(await sessionsOf(member)).toEqual([])
+    expect(stops).toEqual([])
+    const entry = logged.mock.calls.map(([e]) => e as { msg?: string; targetId?: string }).find((e) => /gave no answer/.test(String(e.msg)))
+    expect(entry?.targetId).toBe(member.id)
+    logged.mockRestore()
+  })
 })
 
 describe('stop removes the borrowed session in a transaction', () => {

@@ -72,6 +72,13 @@ export type MasqPluginOptions = {
    * it runs once per request while masquerading.
    */
   recheck?: (args: MasqRecheckArgs) => unknown
+  /**
+   * Run on a database that has no transactions. Unsafe when requests overlap: a start or a stop can then undo
+   * another one's change to the same user's sessions, so an ended borrowed session can come back and a sign-in
+   * can be lost. Without it, Masq refuses to start when a transaction can't be run, and refuses to start or
+   * end a borrowed session without one. Default false.
+   */
+  allowNoTransactions?: boolean
   onStart?: (args: MasqStartArgs) => void | Promise<void>
   onStop?: (args: MasqStopArgs) => void | Promise<void>
   enabled?: boolean

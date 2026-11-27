@@ -2,6 +2,30 @@
 
 Newest first.
 
+## 2026-11-26: start adds in a transaction, start-up checks for transactions, retries wait (K810, review round)
+
+A review of the K810 change found four gaps. Tests were written first: 13 of the 16 new tests failed on the source before this round, and three are controls. `test/stop.test.ts` grew from 17 to 27 tests and `test/transactions.test.ts` is new with 6. Suite: 107 → 123.
+
+| Promise | Test |
+| --- | --- |
+| A session returned while start is asking `canMasquerade` stays ended | `start adds the borrowed session… > leaves a session ended that was stopped while start was being checked` |
+| A sign-in the target makes while start is asking `canMasquerade` is kept | `…keeps the target's own sign-in made while start was being checked` |
+| Four starts on one target at once each get a working session | `…gives every masquerader a working session when several start on one target at once` |
+| Start answers 404 when the target was deleted while it was deciding | `…answers 404 when the target was deleted…` |
+| Eight stops of one session at once all answer 200, `onStop` once, session gone | `many stops at once on one target > all eight answer 200…` |
+| Eight masquerades of one target stopped at once all end, and the target's own session stays | `…eight masquerades of one target stopped at once all end, and only those` |
+| A begin that throws is tried again; one that keeps throwing fails closed | `stop when a step around the delete fails > tries again…`, `…fails closed when beginning the transaction keeps throwing` |
+| An `onStop` that throws on stop still clears the cookies and restores | `…still clears the cookies and restores the masquerader when onStop throws` |
+| A commit with no answer, then the session found gone, is logged | `…logs it when a commit that gave no answer leaves nobody to report onStop` |
+| Start-up refuses a database whose transaction can't run, and an adapter that gives none | `a database without transactions > stops start-up…` (2, on a standalone MongoDB) |
+| `allowNoTransactions` must be a boolean | `…refuses an allowNoTransactions that is not true or false` |
+| With `allowNoTransactions: true` a masquerade starts and stops on a standalone MongoDB | `allowNoTransactions: true > starts up, and a masquerade starts and stops without a transaction` |
+| With the start-up check skipped and no opt-out, start refuses and adds nothing, and stop fails closed | `start-up checks skipped on a database without transactions > …` (2) |
+
+What the overlap tests prove, and no more: the stop tests hold every request until all have signed in, then let them race, so the transaction's conflict and the retry are what keep the result right. The start tests hold start inside `canMasquerade` while one other change finishes, so they prove the fresh read, and the four-starts test proves the retry. Up to eight at once on one user is tested; more is not.
+
+Skipped, with why: the overlap with Payload's own sign-in, which writes back the sessions it read first. Masq can't change it, so it is written as a known limit in the README and CHANGELOG with no test. The per-request check without a transaction has no test of its own; it goes through the same `revoke` that the stop test covers. A read or write that throws inside start has no test; start's catch is one block around `addSession`. Postgres and SQLite are not run, the start-up check included. Real outages are simulated by making one adapter call throw.
+
 ## 2026-11-26: stop deletes in a transaction, fails closed and reports `expired` accurately (K810)
 
 A security fix. New file `test/stop.test.ts`, written first: 11 of its 17 tests failed on 0.1.2, and the other six are controls that passed before and after. Three older tests expected `expired: true` for a session that was alive, and now expect `false` and the session ended: two in `test/recheck.test.ts` and one in `test/masq.test.ts`. Suite: 90 → 107.
@@ -19,7 +43,7 @@ A security fix. New file `test/stop.test.ts`, written first: 11 of its 17 tests 
 | The browser lost the token: an alive session is ended (`false`), a gone one reports `true` | `…lost the borrowed token…` (2), `masquerade refusals > reports a borrowed session that had already ended…` |
 | A state cookie with no session id still ends a matching session, and on a mismatch ends nothing and doesn't say expired | `a state cookie issued before it carried the session id > …` (2) |
 
-Skipped: the fail-closed case once per way the delete can fail (begin, read, write, commit). They share one catch, and the write is the step the recheck's own test already fails. A non-overlapping repeat of stop reporting `onStop` twice is a known limit, written in the CHANGELOG, with no test. Not covered here and for the lead: Postgres and SQLite, where the id from the state cookie is turned into a number and that conversion has no test.
+Skipped: the fail-closed case for a read that throws. (This note first said begin, read, write and commit share one catch. That was wrong for begin, which sat outside the retry loop until the review round below.) A non-overlapping repeat of stop reporting `onStop` twice is a known limit, written in the CHANGELOG, with no test. Not covered here and for the lead: Postgres and SQLite, where the id from the state cookie is turned into a number and that conversion has no test.
 
 ## 2026-11-26: borrowed sessions are rechecked on every request (K807)
 
