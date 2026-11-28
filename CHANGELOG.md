@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.4 (2026-11-28)
+
+Shorter README and changelog. No code changes, and nothing for a host to do after 0.1.3.
+
+Tested: the full suite (134 tests), the typecheck and the leak check. Not tested: a host app.
+
 ## 0.1.3 (2026-11-28)
 
 ### Security
