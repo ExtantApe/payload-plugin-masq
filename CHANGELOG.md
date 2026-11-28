@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 (2026-11-28)
 
 ### Security
 
@@ -45,6 +45,12 @@ number `id` field. Refusals were compared by status, body and headers, those for
 may not use masquerade with Payload's `debug` off and on too. The banner was rendered in the
 test harness. Not tested: Postgres or SQLite, GraphQL for these changes, a real Next.js server
 or browser, and response timing, which this change doesn't try to even out.
+
+### Development
+
+- The Payload dev dependencies used by the tests move to 3.94.2, which brings mongoose 8.24.7
+  and clears `npm audit`. Peer ranges are unchanged, and mongoose isn't in the published
+  package. Tested with the full suite (134 tests) and the typecheck; not tested in a host app.
 
 ## 0.1.2 (2026-11-26)
 
