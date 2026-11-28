@@ -70,7 +70,9 @@ Built for support and troubleshooting.
 
 ## Upgrading from 0.1.2
 
-End running masquerades before upgrading.
+End running masquerades before upgrading. Each person masquerading can press **Return to my
+account**. To end them all at once, run the command under **Upgrading from 0.1.0** below. It
+signs every user out.
 
 ## Upgrading from 0.1.0
 
