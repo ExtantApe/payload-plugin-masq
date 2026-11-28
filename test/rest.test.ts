@@ -3,10 +3,11 @@ import { GRAPHQL_POST } from '@payloadcms/next/routes'
 import { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, getFieldsToSign, getPayload, handleEndpoints, jwtSign, type Payload, type SanitizedConfig } from 'payload'
 import { addSessionToUser } from 'payload/shared'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { masqPlugin, STATE_COOKIE, type MasqStopArgs } from '../src/index.js'
+import { decodeState, masqPlugin, STATE_COOKIE, type MasqStopArgs } from '../src/index.js'
 import { READ_ONLY_MESSAGE } from '../src/plugin.js'
+import { encodeState } from '../src/state.js'
 
 // Read-only masquerade through real HTTP requests: Payload's own REST router
 // (`handleEndpoints`, what `@payloadcms/next/routes` serves) and its GraphQL route.
@@ -355,6 +356,322 @@ describe('canMasquerade must answer exactly true', () => {
     const body = (await withRule(rule, async () => (await rest('GET', '/users/masq/search', await signIn(admin))).json())) as { docs: { id: string; allowed: boolean }[] }
     expect(body.docs.find((d) => d.id === member.id)?.allowed).toBe(false)
     expect(body.docs.find((d) => d.id === admin2.id)?.allowed).toBe(true)
+  })
+})
+
+describe('start never says whether a user id exists to someone who is not allowed', () => {
+  type Rule = (a: { user: U; target?: U }) => unknown
+  const MADE_UP = '000000000000000000000000'
+  const MALFORMED = ['not-an-id', '123', '%7B%24ne%3Anull%7D', 'x'.repeat(200)]
+  const users = () => payload.collections.users!.config
+  const masq = () => payload.config.custom!.masq as { canMasquerade: unknown }
+  const nobody = () => false
+  const everyone = () => true
+
+  /** Runs `fn` with another permission rule and another read access on users, then puts both back. */
+  async function withHost<T>({ rule, read, debug = false }: { rule?: unknown; read?: unknown; debug?: boolean }, fn: () => Promise<T>) {
+    const before = { rule: masq().canMasquerade, read: users().access.read, debug: payload.config.debug }
+    if (rule) masq().canMasquerade = rule
+    if (read) users().access.read = read as never
+    payload.config.debug = debug
+    try {
+      return await fn()
+    } finally {
+      masq().canMasquerade = before.rule
+      users().access.read = before.read
+      payload.config.debug = before.debug
+    }
+  }
+
+  /** Everything a caller gets back. */
+  const answer = async (res: Response) => ({ status: res.status, body: await res.text(), headers: [...res.headers] })
+
+  /** The answers for another real user, a made-up id and several malformed ones. */
+  async function answers(jar: Jar, realId: string) {
+    const out = []
+    for (const id of [realId, MADE_UP, ...MALFORMED]) out.push(await answer(await rest('POST', `/users/${id}/masq`, jar, {})))
+    return out
+  }
+
+  const expectAll = (got: Awaited<ReturnType<typeof answers>>, status: number, message: string) => {
+    for (const a of got) expect(a).toEqual(got[0])
+    expect(got[0]!.status).toBe(status)
+    expect((JSON.parse(got[0]!.body) as { errors: { message: string }[] }).errors[0]!.message).toBe(message)
+    expect(got[0]!.headers.map(([k]) => k)).not.toContain('set-cookie')
+  }
+  const REFUSED = 'You may not masquerade as this user.'
+  const NOT_FOUND = 'User not found.'
+
+  const throws = () => {
+    throw new Error('rule failed')
+  }
+  const rules: [string, Rule][] = [
+    ['says no', nobody],
+    ['throws', throws],
+    ['rejects', async () => Promise.reject(new Error('rule failed'))],
+    ['answers a truthy value', () => 'yes'],
+    ['answers nothing', () => undefined],
+    ['reads the target without checking for one', ({ target }) => (target as U).role === 'nobody'],
+    ['throws only when it gets a target', ({ target }) => (target ? throws() : false)],
+  ]
+
+  it.each(rules)('answers every id alike when the rule %s', async (_name, rule) => {
+    const jar = await signIn(member)
+    for (const read of [nobody, everyone])
+      for (const debug of [false, true]) {
+        const got = await withHost({ rule, read, debug }, () => answers(jar, admin.id))
+        // With debug on, Payload adds a stack to the body, so it has to match too.
+        expectAll(got, 403, REFUSED)
+      }
+  })
+
+  it('calls neither audit hook on a refusal', async () => {
+    const jar = await signIn(member)
+    const before = stops.length
+    const opts = payload.config.custom!.masq as { onStart?: unknown }
+    const started: unknown[] = []
+    const onStart = opts.onStart
+    opts.onStart = (a: unknown) => void started.push(a)
+    try {
+      await answers(jar, admin.id)
+    } finally {
+      opts.onStart = onStart
+    }
+    expect(started).toEqual([])
+    expect(stops.length).toBe(before)
+  })
+
+  it('still tells someone who is allowed that a user was not found', async () => {
+    const jar = await signIn(admin)
+    expectAll((await answers(jar, MADE_UP)), 404, NOT_FOUND)
+  })
+
+  describe('someone who may use masquerade, but not as this user', () => {
+    // Also what a rule that only looks at the target answers when there is no target.
+    const notAdmins: Rule = ({ target }) => target?.role !== 'admin'
+
+    it('gets the not-found answer for a user they cannot read, the same as for no user', async () => {
+      const jar = await signIn(member)
+      for (const read of [nobody, () => ({ role: { equals: 'member' } }), throws])
+        for (const debug of [false, true])
+          expectAll(await withHost({ rule: notAdmins, read, debug }, () => answers(jar, admin.id)), 404, NOT_FOUND)
+    })
+
+    it('is told they may not, only for a user they can read', async () => {
+      const jar = await signIn(member)
+      const res = await withHost({ rule: notAdmins, read: everyone }, () => rest('POST', `/users/${admin.id}/masq`, jar, {}))
+      expect(res.status).toBe(403)
+      expect(await errorOf(res)).toBe(REFUSED)
+    })
+  })
+
+  it('answers the same when loading a real user fails', async () => {
+    const hooks = users().hooks
+    const before = hooks.afterRead
+    const jarMember = await signIn(member)
+    const jarAdmin = await signIn(admin)
+    hooks.afterRead = [
+      ...(before ?? []),
+      ({ doc }) => {
+        if (String(doc.id) === admin2.id) throw new Error('read hook failed')
+        return doc
+      },
+    ]
+    try {
+      expectAll(await answers(jarMember, admin2.id), 403, REFUSED)
+      expectAll(await answers(jarAdmin, admin2.id), 404, NOT_FOUND)
+    } finally {
+      hooks.afterRead = before
+    }
+  })
+
+  it('still starts when the rule allows the target but says no without one, even for a user they cannot read', async () => {
+    const onlyCy: Rule = ({ target }) => target?.id === member.id
+    const jar = await signIn(admin2)
+    const res = await withHost({ rule: onlyCy, read: nobody }, () => rest('POST', `/users/${member.id}/masq`, jar, {}))
+    expect(res.status).toBe(200)
+    expectAll(await withHost({ rule: onlyCy, read: nobody }, () => answers(jar, admin.id)), 403, REFUSED)
+  })
+})
+
+describe('start goes by the account found, however its id is spelled', () => {
+  // The database reads an id's hex in either case. Letters are all that change, so the ids need at least one.
+  const upper = (id: string) => id.toUpperCase()
+  const mixed = (id: string) => id.replace(/[a-f]/, (c) => c.toUpperCase())
+  const spellings: [string, (id: string) => string][] = [
+    ['upper case', upper],
+    ['mixed case', mixed],
+  ]
+  type Hooks = { onStart?: unknown; canMasquerade: unknown }
+  const masq = () => payload.config.custom!.masq as Hooks
+  const sessionsOf = async (u: U) =>
+    ((await payload.findByID({ collection: 'users', id: u.id, showHiddenFields: true })) as unknown as { sessions?: unknown[] }).sessions?.length ?? 0
+  const signsInAs = async (token: string) => (await payload.auth({ headers: new Headers({ Authorization: `Bearer ${token}` }) })).user?.id ?? null
+
+  /** Runs `fn` recording who `onStart` and `canMasquerade` were asked about, then puts both back. */
+  async function recording<T>(fn: () => Promise<T>) {
+    const before = { onStart: masq().onStart, canMasquerade: masq().canMasquerade }
+    const started: string[] = []
+    const asked: string[] = []
+    masq().onStart = ({ target }: { target: U }) => void started.push(String(target.id))
+    masq().canMasquerade = (a: { user: U; target?: U }) => {
+      if (a.target) asked.push(String(a.target.id))
+      return a.user.role === 'admin'
+    }
+    try {
+      return { result: await fn(), started, asked }
+    } finally {
+      Object.assign(masq(), before)
+    }
+  }
+
+  it.each(spellings)('refuses yourself with your id in %s', async (_name, spell) => {
+    const own = await signIn(admin)
+    const id = spell(admin.id)
+    expect(id).not.toBe(admin.id)
+    const sessions = await sessionsOf(admin)
+    const { result: res, started, asked } = await recording(() => rest('POST', `/users/${id}/masq`, own, {}))
+    expect(res.status).toBe(400)
+    expect(await errorOf(res)).toBe('Choose another user.')
+    expect(res.headers.getSetCookie()).toEqual([])
+    expect(started).toEqual([])
+    expect(asked).toEqual([])
+    expect(await sessionsOf(admin)).toBe(sessions)
+  })
+
+  it.each(spellings)('records the found id for a target spelled in %s, and Return ends the borrowed session', async (_name, spell) => {
+    const own = await signIn(admin)
+    const id = spell(member.id)
+    expect(id).not.toBe(member.id)
+    const { result: res, started } = await recording(() => rest('POST', `/users/${id}/masq`, own, {}))
+    expect(res.status).toBe(200)
+    expect(started).toEqual([member.id])
+    const set = jarOf(res)
+    expect(decodeState(payload.secret, set[STATE_COOKIE])).toMatchObject({ by: admin.id, as: member.id })
+    const borrowed = set['payload-token']!
+    expect(await signsInAs(borrowed)).toBe(member.id)
+    const before = stops.length
+    const back = await rest('POST', '/users/masq/stop', set)
+    expect(await back.json()).toMatchObject({ restored: true, redirect: `/admin/collections/users/${member.id}` })
+    expect(stops.slice(before)).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: member.id, expired: false, restored: true })])
+    expect(await signsInAs(borrowed)).toBeNull()
+  })
+
+  describe('stop with a state cookie set before an upgrade', () => {
+    /** Starts a masquerade as the member, then signs its state cookie again with `change` applied. */
+    async function startedWith(change: { as?: string; by?: string }) {
+      const res = await rest('POST', `/users/${member.id}/masq`, await signIn(admin), {})
+      expect(res.status).toBe(200)
+      const set = jarOf(res)
+      const state = decodeState(payload.secret, set[STATE_COOKIE])!
+      return { jar: { ...set, [STATE_COOKIE]: encodeState(payload.secret, { ...state, ...change }) } as Jar, borrowed: set['payload-token']! }
+    }
+
+    /**
+     * Calls stop, counting the lookups of a masquerade's target (the only reads there with both `disableErrors`
+     * and `showHiddenFields`). `answer`, if given, stands in for the lookup of `answer.id`.
+     */
+    async function stop(jar: Jar, answer?: { id: string; with: () => unknown }) {
+      const real = payload.findByID.bind(payload) as (args: Record<string, unknown>) => Promise<unknown>
+      const lookups: unknown[] = []
+      const spy = vi.spyOn(payload, 'findByID').mockImplementation((async (args: Record<string, unknown>) => {
+        if (!args.disableErrors || !args.showHiddenFields) return real(args)
+        lookups.push(args.id)
+        return answer && args.id === answer.id ? answer.with() : real(args)
+      }) as never)
+      const before = stops.length
+      try {
+        const res = await rest('POST', '/users/masq/stop', jar)
+        expect(res.status).toBe(200)
+        return { body: (await res.json()) as Record<string, unknown>, set: jarOf(res), reported: stops.slice(before), lookups }
+      } finally {
+        spy.mockRestore()
+      }
+    }
+
+    it.each(spellings)('ends the borrowed session when the state spells the target in %s', async (_name, spell) => {
+      const as = spell(member.id)
+      expect(as).not.toBe(member.id)
+      const { jar, borrowed } = await startedWith({ as })
+      expect(await signsInAs(borrowed)).toBe(member.id)
+      const { body, reported, lookups } = await stop(jar)
+      expect(await signsInAs(borrowed)).toBeNull()
+      expect(reported).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: member.id, expired: false, restored: true })])
+      expect(body).toMatchObject({ restored: true, redirect: `/admin/collections/users/${member.id}` })
+      expect(lookups).toEqual([as])
+    })
+
+    it('looks nothing up when the state and the token spell the target alike', async () => {
+      const { jar, borrowed } = await startedWith({})
+      const { reported, lookups } = await stop(jar)
+      expect(lookups).toEqual([])
+      expect(reported).toEqual([expect.objectContaining({ targetId: member.id, expired: false })])
+      expect(await signsInAs(borrowed)).toBeNull()
+    })
+
+    /** Stop's answer when the state isn't shown to name this borrowed session: it stays, and the admin gets back. */
+    async function expectLeftAlone(jar: Jar, borrowed: string, as: string, answer?: Parameters<typeof stop>[1]) {
+      const sessions = await sessionsOf(member)
+      const { body, set, reported, lookups } = await stop(jar, answer)
+      expect(lookups).toEqual([as])
+      expect(await signsInAs(borrowed)).toBe(member.id)
+      expect(await sessionsOf(member)).toBe(sessions)
+      expect(reported).toEqual([expect.objectContaining({ masqueraderId: admin.id, targetId: as, expired: true, restored: true })])
+      expect(body).toMatchObject({ restored: true, redirect: `/admin/collections/users/${as}` })
+      expect(set['payload-token']).toBe(jar['payload-masq-return'])
+      expect(set[STATE_COOKIE]).toBe('')
+    }
+
+    it.each([['its own spelling', (id: string) => id], ...spellings])('deletes nothing when the state names another account in %s', async (_name, spell) => {
+      const as = spell(admin2.id)
+      const { jar, borrowed } = await startedWith({ as })
+      await expectLeftAlone(jar, borrowed, as)
+    })
+
+    it('deletes nothing when the database cannot read the id in the state', async () => {
+      const { jar, borrowed } = await startedWith({ as: 'not-an-id' })
+      await expectLeftAlone(jar, borrowed, 'not-an-id')
+    })
+
+    it.each<[string, () => unknown]>([
+      [
+        'fails',
+        () => {
+          throw new Error('lookup failed')
+        },
+      ],
+      ['finds nothing', () => null],
+      ['hands back no id', () => ({})],
+      // It reads as the member's id as text, but it isn't a string or a number.
+      ['hands back an object for an id', () => ({ id: { toString: () => member.id } })],
+      ['hands back a number that is not finite', () => ({ id: Number.NaN })],
+    ])('deletes nothing when the lookup %s', async (_name, answer) => {
+      const as = upper(member.id)
+      const { jar, borrowed } = await startedWith({ as })
+      await expectLeftAlone(jar, borrowed, as, { id: as, with: answer })
+    })
+
+    it('looks nothing up and deletes nothing when the state names another masquerader', async () => {
+      const as = upper(member.id)
+      const { jar, borrowed } = await startedWith({ as, by: admin2.id })
+      const { body, reported, lookups } = await stop(jar)
+      expect(lookups).toEqual([])
+      expect(await signsInAs(borrowed)).toBe(member.id)
+      expect(reported).toEqual([expect.objectContaining({ masqueraderId: admin2.id, targetId: as, expired: true, restored: false })])
+      expect(body).toMatchObject({ restored: false, redirect: '/admin/login' })
+    })
+  })
+
+  it('gives someone who is not allowed one answer for real and made-up ids in any spelling', async () => {
+    const jar = await signIn(member)
+    const madeUp = 'abcdefabcdefabcdefabcdef'
+    const got = []
+    for (const id of [admin.id, upper(admin.id), mixed(admin.id), madeUp, upper(madeUp), mixed(madeUp)]) {
+      const res = await rest('POST', `/users/${id}/masq`, jar, {})
+      got.push({ status: res.status, body: await res.text(), headers: [...res.headers] })
+    }
+    for (const a of got) expect(a).toEqual(got[0])
+    expect(got[0]!.status).toBe(403)
   })
 })
 

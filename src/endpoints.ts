@@ -3,7 +3,7 @@ import { addSessionToUser, parseCookies } from 'payload/shared'
 
 import { BORROWED_CLAIM, borrowedClaim, cookie, encodeState, isMasquerading, masqOptions, masqStateOf, RETURN_COOKIE, sessionsOn, STATE_COOKIE } from './state.js'
 import { mayMasquerade } from './access.js'
-import type { MasqUser } from './types.js'
+import type { MasqUser, ResolvedMasqOptions } from './types.js'
 
 const STATE_SECONDS = 24 * 60 * 60
 
@@ -22,6 +22,54 @@ function signedIn(req: PayloadRequest): MasqUser {
   return req.user as unknown as MasqUser
 }
 
+/**
+ * The account a masquerade's target id names, or null. A lookup that fails (an id the database can't read, a
+ * hook that throws) counts as no user, so start's answer is the same as for an id nobody has. So does an
+ * account that comes back without a usable id of its own.
+ */
+async function loadTarget(req: PayloadRequest, collection: string, id: string): Promise<MasqUser | null> {
+  try {
+    const found = (await req.payload.findByID({
+      collection: collection as never,
+      id,
+      depth: 0,
+      overrideAccess: true,
+      showHiddenFields: true,
+      disableErrors: true,
+      req,
+    })) as MasqUser | null
+    const foundId: unknown = found?.id
+    return (typeof foundId === 'string' && foundId) || Number.isFinite(foundId) ? found : null
+  } catch (err) {
+    req.payload.logger.error({ err, msg: 'payload-plugin-masq: could not load the user to masquerade as' })
+    return null
+  }
+}
+
+/** Whether the signed-in user's own read access finds this account. An error is a no. */
+async function canRead(req: PayloadRequest, collection: string, id: string): Promise<boolean> {
+  try {
+    return Boolean(
+      await req.payload.findByID({ collection: collection as never, id, depth: 0, overrideAccess: false, user: req.user, disableErrors: true, req }),
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Why start is refused, without saying whether an account exists to anyone who couldn't already know.
+ * Someone who may not use masquerade at all (`canMasquerade` with no target) always gets the same 403.
+ * Someone who may gets "not found", for a missing account and equally for a refused one their own read
+ * access doesn't find, and the 403 only for a refused account they can read.
+ */
+async function startRefusal(opts: ResolvedMasqOptions, req: PayloadRequest, user: MasqUser, target: MasqUser | null): Promise<Error> {
+  const notFound = (await mayMasquerade(opts, { payload: req.payload, user })) && !(target && (await canRead(req, opts.collection, String(target.id))))
+  return notFound
+    ? new APIError('User not found.', 404, undefined, true)
+    : new APIError('You may not masquerade as this user.', 403, undefined, true)
+}
+
 /** POST /api/<collection>/:id/masq  { reason? } */
 export const startEndpoint: Endpoint = {
   path: '/:id/masq',
@@ -34,23 +82,18 @@ export const startEndpoint: Endpoint = {
     if (isMasquerading(req.payload, req.headers)) throw new APIError('Stop masquerading first.', 400, undefined, true)
     const own = parseCookies(req.headers).get(tokenCookie(req))
     if (!own) throw new APIError('Masquerade needs a browser sign-in.', 400, undefined, true)
-    const id = String(req.routeParams?.id ?? '')
-    if (!id || id === String(user.id)) throw new APIError('Choose another user.', 400, undefined, true)
+    // The id as the caller spelled it. It only finds the account: a database can read several spellings as one
+    // id (hex in either case; "01" for 1), so who the account is comes from the account found.
+    const asked = String(req.routeParams?.id ?? '')
+    const chooseAnother = () => new APIError('Choose another user.', 400, undefined, true)
+    if (!asked || asked === String(user.id)) throw chooseAnother()
     await addDataAndFileToRequest(req)
     const reason = typeof req.data?.reason === 'string' ? req.data.reason.trim().slice(0, 500) || null : null
     if (opts.requireReason && !reason) throw new APIError('Say why you are masquerading.', 400, undefined, true)
 
-    const target = (await req.payload.findByID({
-      collection: opts.collection as never,
-      id,
-      depth: 0,
-      overrideAccess: true,
-      showHiddenFields: true,
-      disableErrors: true,
-      req,
-    })) as MasqUser | null
-    if (!target) throw new APIError('User not found.', 404, undefined, true)
-    if (!(await mayMasquerade(opts, { payload: req.payload, user, target }))) throw new APIError('You may not masquerade as this user.', 403, undefined, true)
+    const target = await loadTarget(req, opts.collection, asked)
+    if (target && String(target.id) === String(user.id)) throw chooseAnother()
+    if (!target || !(await mayMasquerade(opts, { payload: req.payload, user, target }))) throw await startRefusal(opts, req, user, target)
 
     const collectionConfig = req.payload.collections[opts.collection as never]!.config
     const { sid } = await addSessionToUser({ collectionConfig, payload: req.payload, req, user: target as never })
@@ -61,7 +104,7 @@ export const startEndpoint: Endpoint = {
       tokenExpiration: opts.duration,
     })
     const now = Date.now()
-    const state = { by: String(user.id), as: id, at: new Date(now).toISOString(), until: new Date(now + opts.duration * 1000).toISOString() }
+    const state = { by: String(user.id), as: String(target.id), at: new Date(now).toISOString(), until: new Date(now + opts.duration * 1000).toISOString() }
     await opts.onStart?.({ req, masquerader: user, target, reason })
     return json({ ok: true, redirect: opts.startPath }, [
       cookie(req.payload, opts.collection, tokenCookie(req), token, opts.duration),
@@ -91,8 +134,15 @@ export const stopEndpoint: Endpoint = {
     // Only a genuine claim, on the token that signs in the very user this request is authenticated as.
     const claim = borrowed ? borrowedClaim(req.payload, req.headers, { userId: String(borrowed.id), sid: borrowed._sid }) : null
     const claimedBy = claim && borrowed && claim.id === String(borrowed.id) ? claim.by : null
+    // A state cookie set before an upgrade can spell the target's id differently from the account's own id. Only
+    // then, and only for the same masquerader, is the account looked up: it matches if its own id is the claim's.
+    let targetId = state?.as
+    if (state && borrowed?.collection === opts.collection && claimedBy === state.by && claim!.id !== state.as) {
+      const found = await loadTarget(req, opts.collection, state.as)
+      if (found && String(found.id) === claim!.id) targetId = claim!.id
+    }
     // With the state cookie, only the borrowed session it names: same target and same masquerader.
-    const live = Boolean(borrowed?.collection === opts.collection && claimedBy && (!state || (claim!.id === state.as && claimedBy === state.by)))
+    const live = Boolean(borrowed?.collection === opts.collection && claimedBy && (!state || (claim!.id === targetId && claimedBy === state.by)))
     if (live && borrowed?._sid) {
       const doc = (await req.payload.findByID({ collection: opts.collection as never, id: borrowed.id, depth: 0, overrideAccess: true, showHiddenFields: true, req })) as {
         sessions?: { id: string }[]
@@ -110,11 +160,11 @@ export const stopEndpoint: Endpoint = {
     const restored = state && own ? await req.payload.auth({ headers: new Headers({ Authorization: `JWT ${own}` }) }).catch(() => null) : null
     const user = (restored?.user ?? null) as MasqUser | null
     const ok = Boolean(state && user && String(user.id) === state.by && (await mayMasquerade(opts, { payload: req.payload, user: user! })))
-    if (state) await opts.onStop?.({ req, masqueraderId: state.by, targetId: state.as, expired: !live, restored: ok })
+    if (state) await opts.onStop?.({ req, masqueraderId: state.by, targetId: targetId!, expired: !live, restored: ok })
     else if (live && claimedBy) await opts.onStop?.({ req, masqueraderId: claimedBy, targetId: String(borrowed!.id), expired: false, restored: false })
     if (!ok) return json({ ok: true, restored: false, redirect: `${opts.adminRoute}/login` }, [...clear, cookie(req.payload, opts.collection, tokenCookie(req), '', -1)])
     const seconds = req.payload.collections[opts.collection as never]!.config.auth.tokenExpiration
-    return json({ ok: true, restored: true, redirect: `${opts.adminRoute}/collections/${opts.collection}/${state!.as}` }, [
+    return json({ ok: true, restored: true, redirect: `${opts.adminRoute}/collections/${opts.collection}/${targetId}` }, [
       ...clear,
       cookie(req.payload, opts.collection, tokenCookie(req), own!, seconds),
     ])

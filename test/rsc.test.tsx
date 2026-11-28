@@ -253,6 +253,13 @@ describe('Server Components render for an allowed admin', () => {
     expect(out.cell).toBe('')
   })
 
+  it('the banner names the target when the start request spelled its id in upper case', async () => {
+    const jar = await masquerade({ ...admin2, id: admin2.id.toUpperCase() })
+    const out = await render(jar, member)
+    expect(out.banner).toContain('You’re masquerading as <strong>Bea Admin</strong>')
+    expect(out.banner).not.toContain('ended')
+  })
+
   it('while masquerading: a banner naming the target, and no way to nest', async () => {
     const jar = await masquerade(admin2)
     const out = await render(jar, member)
