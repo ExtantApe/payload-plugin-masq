@@ -44,13 +44,12 @@ Built for support and troubleshooting.
   account** in the banner to clear it, or wait for the cookie to expire.
 - **`canMasquerade` must answer exactly `true`.** A truthy value, or an error it throws, is a
   no: the endpoints refuse and the components show nothing.
-- **Refusals don't say who exists.** If `canMasquerade` with no target isn't `true` for you,
-  start answers the same 403 for every other id it won't let you use, whether or not a user has
-  it. If it is `true`, you get 404 "User not found." for a missing user, and the same 404 for a
-  refused user your own read access doesn't find; a refused user you can read answers 403. So
-  make `canMasquerade` answer `true` with no target for the people who may use masquerade.
-  A failure while loading the user is logged and answered like a missing user. Response times
-  aren't evened out.
+- **How start answers a refusal.** If `canMasquerade` with no target isn't `true` for you,
+  start answers 403 for any id but your own that it won't let you use. If it is `true`, you get
+  404 "User not found." for a missing user, and for a refused user your own read access doesn't
+  find; a refused user you can read answers 403. So make `canMasquerade` answer `true` with no
+  target for the people who may use masquerade. A failure while loading the user is logged and
+  answered like a missing user.
 - **Checked on every request.** While a borrowed session is live, every request that carries
   its token, in the cookie or an `Authorization` header, asks `canMasquerade` again with the
   masquerader and the target loaded fresh, then your `recheck` if you set one. If the answer
@@ -68,6 +67,12 @@ Built for support and troubleshooting.
   `basePath`, stopping a revoked masquerade can report `onStop` twice.
 - Never as yourself, no nesting, no public endpoints: masquerading needs a signed-in user the
   rules allow.
+
+## Upgrading from 0.1.2
+
+End running masquerades before upgrading. Each person masquerading can press **Return to my
+account**. To end them all at once, run the command under **Upgrading from 0.1.0** below. It
+signs every user out.
 
 ## Upgrading from 0.1.0
 
@@ -170,8 +175,8 @@ import { MasqueradeBanner } from '@extantape/payload-plugin-masq/rsc'
 
 On the auth collection (`/api/users/…`): `POST /:id/masq` (start, body `{ reason? }`),
 `POST /masq/stop` (return) and `GET /masq/search?q=` (admin search). All need a signed-in
-user that `canMasquerade` allows. For how start answers a refusal, see **Refusals don't say who
-exists** above.
+user that `canMasquerade` allows. See **How start answers a refusal**
+above.
 
 ## Acknowledgements
 

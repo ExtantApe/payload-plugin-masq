@@ -2,62 +2,18 @@
 
 Newest first.
 
-## 2026-11-27 (after review): the stop tests run against the old source
+## 2026-11-27: start and stop, for 0.1.3 (K891)
 
-A reviewer ran the 13 new stop tests against the earlier source: 11 fail and 2 pass. The
-2 that pass cover behavior that was already right. The proof of the change is the 2 tests
-that end the session when the earlier spelling is upper or mixed case. The other 9 failures
-are only the lookup count; their safety checks would pass on the earlier source too, so
-they guard the new lookup against regressions. This replaces the "not run" note below.
+Suite: 90 tests before, 134 after.
 
-## 2026-11-27 (latest): stop matches a target id recorded in another spelling
-
-A fix for masquerades started before the upgrade. 13 new tests in `rest.test.ts`, `stop with a state cookie set before an upgrade`. Each signs the state cookie again with the change under test. They weren't run against the old source in this pass; a reviewer does that separately. Suite: 121 → 134.
-
-| Promise | Test |
+| Promise | Tests |
 | --- | --- |
-| A state spelling the target in upper or mixed case: the borrowed session is deleted, `onStop` gets the account's own id and `expired: false`, the return uses that id, with one lookup | `…ends the borrowed session when the state spells the target in …` (2) |
-| A matching stop makes no lookup | `…looks nothing up when the state and the token spell the target alike` |
-| A state naming another account, in any of those spellings, or an id the database can't read, deletes nothing; the admin still gets their own session back and the state cookie is cleared | `…deletes nothing when the state names another account in …` (3), `…deletes nothing when the database cannot read the id…` |
-| A lookup that fails, finds nothing, or gives no id, an object or a non-finite number is no match, with the same answer | `…deletes nothing when the lookup …` (5, mocked) |
-| A state naming another masquerader makes no lookup, deletes nothing and restores nobody | `…looks nothing up and deletes nothing when the state names another masquerader` |
+| Start's status, body and headers for each kind of caller and user, with no audit hook on a refusal; a target the rule allows still starts | `test/rest.test.ts` |
+| Start refuses yourself, and its record, the banner, `onStop` and the return use the account's own id; an unusable looked-up id starts nothing | `test/rest.test.ts`, `test/numeric-id.test.ts`, `test/rsc.test.tsx` |
+| Stop for a masquerade started before the upgrade, including lookups that fail or don't match | `test/rest.test.ts` |
 
-Skipped: number ids (the comparison is the same code, and `numeric-id.test.ts` covers how start reads their spellings). Gap for the lead: the banner still compares the state's spelling with the signed-in user's id, and no test covers it with an older spelling.
-
-## 2026-11-27 (later): start goes by the id of the account it finds
-
-A security fix from review. New tests, written first: 14 of the 18 failed on the old source. The other four guard behavior that was already right (your own number id spelled exactly, a target's number id spelled exactly, and one answer for someone not allowed, with text ids and with number ids). All pass now. Suite: 103 → 121.
-
-| Promise | Test |
-| --- | --- |
-| Your own id in upper or mixed case is refused with "Choose another user.", with no cookies, no new session, no `onStart`, and `canMasquerade` not asked about you | `rest.test.ts`, `start goes by the account found… > refuses yourself with your id in …` (2) |
-| For a target spelled in upper or mixed case, `onStart` and the signed state get the found id; Return deletes the borrowed session, redirects to that id and reports `onStop` once with it and `expired: false` | `…records the found id for a target spelled in …` (2) |
-| Someone not allowed gets one answer for real and made-up ids in any case | `…gives someone who is not allowed one answer…` |
-| The banner names the target after such a start | `rsc.test.tsx`, `…the banner names the target when the start request spelled its id in upper case` |
-| Number ids: your own is refused as `1`, `01`, `1.0` or `001` | `numeric-id.test.ts`, `number ids > refuses yourself spelled …` (4) |
-| Number ids: for a target spelled `2`, `02` or `2.0`, the record, `onStop` and the return use `2` | `…records the found id for a target spelled …` (3) |
-| Number ids: someone not allowed gets one answer for real, made-up and odd spellings | `…gives someone who is not allowed one answer…` |
-| A user that comes back with a missing, empty, object or non-finite id starts nothing | `…starts nothing when the lookup hands back …` (4) |
-
-Skipped: Postgres and SQLite (the number-id tests use a number `id` field on MongoDB, which reads those spellings as one number; the fix doesn't depend on how an adapter reads them, because it compares the found account's id), and GraphQL (start is a REST endpoint only).
-
-## 2026-11-27: start refusals don't say whether a user exists
-
-A security fix. New tests in `test/rest.test.ts`, through Payload's REST router, written first: 10 of the 13 failed on the old source (the other three guard behavior that was already right). All pass now. Each compares status, body and headers. Suite: 90 → 103.
-
-| Promise | Test (`start never says whether a user id exists…`) |
-| --- | --- |
-| Someone not allowed gets one answer for a real id, a made-up id and malformed ids, with no cookies, with read access to no users or all users, and with `debug` off and on | `answers every id alike when the rule …` (7: no, throws, rejects, truthy, nothing, fails without a target, throws only with a target) |
-| A refusal calls neither `onStart` nor `onStop` | `calls neither audit hook on a refusal` |
-| Someone allowed is still told a user wasn't found | `still tells someone who is allowed…` |
-| Someone who may use masquerade, refused for a user they can't read (or whose read check throws), gets the not-found answer | `…gets the not-found answer for a user they cannot read…` |
-| The 403 for a refused target is given only for a user they can read | `…is told they may not, only for a user they can read` |
-| A failure loading a real user answers like a missing one | `answers the same when loading a real user fails` |
-| A rule that allows a target but says no without one still starts | `still starts when the rule allows the target…` |
-
-Other endpoints: start is the only one that takes an id from the caller. Stop reads ids only from the signed state cookie and the signed borrowed token, and search checks permission before it reads anything (already covered).
-
-Skipped: response timing (not evened out), and Postgres or SQLite (the suite runs on MongoDB; a lookup that throws there is covered by the read hook test).
+- **Mocked.** Some lookup failures and unusable results.
+- **Skipped.** Postgres and SQLite (the suite runs on MongoDB), GraphQL (start and stop are REST endpoints), and number ids for stop (`test/numeric-id.test.ts` covers them for start).
 
 ## 2026-11-26: borrowed sessions are rechecked on every request (K807)
 
