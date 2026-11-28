@@ -1,6 +1,6 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
 import { GRAPHQL_POST } from '@payloadcms/next/routes'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import type { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, getFieldsToSign, getPayload, handleEndpoints, jwtSign, type Payload, type SanitizedConfig } from 'payload'
 import { addSessionToUser } from 'payload/shared'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { decodeState, masqPlugin, STATE_COOKIE, type MasqStopArgs } from '../src/index.js'
 import { READ_ONLY_MESSAGE } from '../src/plugin.js'
 import { encodeState } from '../src/state.js'
+import { startMongo } from './mongo.js'
 
 // Read-only masquerade through real HTTP requests: Payload's own REST router
 // (`handleEndpoints`, what `@payloadcms/next/routes` serves) and its GraphQL route.
@@ -65,7 +66,7 @@ async function masquerade(as: U): Promise<Jar> {
 }
 
 beforeAll(async () => {
-  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+  mongo = await startMongo()
   config = buildConfig({
     secret: 'rest-test-secret-not-for-production',
     // Refusals are expected here; keep their error logs out of the test output.

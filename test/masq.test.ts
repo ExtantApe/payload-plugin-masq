@@ -1,9 +1,10 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import type { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, createLocalReq, getPayload, type Endpoint, type Payload, type PayloadRequest } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { assertNotMasquerading, decodeState, masqPlugin, masqueraderOf, STATE_COOKIE, type MasqStartArgs, type MasqStopArgs } from '../src/index.js'
+import { startMongo } from './mongo.js'
 
 type U = { id: string; email: string; role: string }
 let payload: Payload
@@ -40,7 +41,7 @@ const jar = (res: Response) =>
 const login = async (u: U) => (await payload.login({ collection: 'users', data: { email: u.email, password: PW } })).token!
 
 beforeAll(async () => {
-  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+  mongo = await startMongo()
   payload = await getPayload({
     config: await buildConfig({
       secret: 'test-secret-not-for-production',

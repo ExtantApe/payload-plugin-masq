@@ -1,6 +1,7 @@
 import type { AuthStrategy, AuthStrategyFunctionArgs, Payload, PayloadRequest } from 'payload'
 
 import { exactlyTrue, mayMasquerade } from './access.js'
+import { ensureGuards } from './guard.js'
 import { type BorrowedClaim, borrowedClaims, masqOptions, sessionsOn } from './state.js'
 import type { MasqUser, ResolvedMasqOptions } from './types.js'
 
@@ -85,8 +86,8 @@ async function recheckClaim(payload: Payload, opts: ResolvedMasqOptions, req: Pa
  * set, no longer answer exactly true), or either account is gone, it deletes the borrowed session from the
  * target's sessions, so the JWT strategy that follows refuses the token, from a cookie or a header alike.
  *
- * It fails closed: if the recheck itself fails (a read or the delete throws), the borrowed token is taken out
- * of the headers the later strategies read, so the request runs signed out.
+ * It fails closed: if the recheck itself fails (a read or the delete throws), or read-only masquerade can't be
+ * confirmed, the borrowed token is taken out of the headers the later strategies read, so the request runs signed out.
  */
 export const recheckStrategy: AuthStrategy = {
   name: 'masq-recheck',
@@ -102,6 +103,9 @@ export const recheckStrategy: AuthStrategy = {
       if (!sessionsOn(payload, opts.collection)) throw new Error('the masquerade collection has sessions turned off')
       // The stop endpoint ends the borrowed session itself and reports it once through onStop.
       if (req?.url && req.method === 'POST' && pathOf(req.url) === `${opts.apiRoute}/${opts.collection}/masq/stop`) return { user: null }
+      // A borrowed token signs in only while read-only masquerade is confirmed on everything Payload built.
+      const guards = ensureGuards(payload)
+      if (!guards.ok) throw new Error(`read-only masquerade is not in place on ${guards.missing.join(', ')}`)
       const now = Date.now() / 1000
       const failed: BorrowedClaim[] = []
       // One recheck per borrowed session, even when its token comes in the cookie and the header both.

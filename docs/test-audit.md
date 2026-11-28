@@ -2,6 +2,23 @@
 
 Newest first.
 
+## 2026-11-28: read-only mode on everything Payload built (K912)
+
+Suite: 134 tests before, 149 after. New file `test/startup.test.ts` (15 tests, 5 of them controls for people who aren't masquerading). Every test file now starts its MongoDB on 127.0.0.1 with no Unix socket (`test/mongo.ts`).
+
+| Promise | Tests |
+| --- | --- |
+| Start-up records that read-only mode is in place | `…records at start-up…` |
+| Writes are refused on collections and globals a later plugin added, a collection whose hooks it rebuilt, and folders and query presets; reads still work and preferences stay writable | `…a later plugin added…`, `…folders and query presets…` |
+| A borrowed session can't be refreshed after a later plugin rebuilt the auth collection hooks; your own session still refreshes | `…refreshing a borrowed session…` |
+| Jobs run, handle-schedules, create, and the `payload.jobs` Local API refuse a masquerading request and leave queued jobs alone | `…running jobs…`, `…jobs Local API…`, `…creating jobs…` |
+| Start answers 503 with no session or cookies when the sign-in check or a collection guard is missing, and works again once restored; a running borrowed session signs in as nobody meanwhile | `when read-only masquerade cannot be confirmed` (2) |
+| Payload refuses to start when the guards can't be confirmed | `…Payload refuses to start` |
+| People who aren't masquerading write to the same collections, run and queue jobs, and Payload runs jobs and migrations | `people who are not masquerading, and Payload itself` (4) |
+
+- **Mocked.** The failures to confirm are made by removing the sign-in check or freezing a collection's hooks.
+- **Skipped.** Postgres and SQLite, GraphQL on the newly covered collections (the same hooks run, and `test/rest.test.ts` covers GraphQL on the others), a dev reload in a real Next.js app, and storage adapters' upload endpoints.
+
 ## 2026-11-27: start and stop, for 0.1.3 (K891)
 
 Suite: 90 tests before, 134 after.

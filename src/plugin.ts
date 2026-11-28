@@ -1,45 +1,15 @@
-import { APIError, type CollectionBeforeOperationHook, type Config, type GlobalBeforeChangeHook, type GlobalBeforeOperationHook, type Plugin } from 'payload'
+import type { Config, Plugin } from 'payload'
 
 import { searchEndpoint, startEndpoint, stopEndpoint } from './endpoints.js'
+import { BOOKKEEPING, ensureGuards, globalChangeGuard, globalReadOnlyGuard, noBorrowedRefresh, readOnlyGuard } from './guard.js'
 import { recheckStrategy } from './recheck.js'
-import { borrowedBy, isMasquerading, sessionsOn } from './state.js'
+import { sessionsOn } from './state.js'
 import type { MasqPluginOptions, ResolvedMasqOptions } from './types.js'
 
-/** Payload's own bookkeeping, written while simply looking around the admin. */
+export { READ_ONLY_MESSAGE } from './guard.js'
+
 const sessionsError = (collection: string, value: unknown) =>
   `payload-plugin-masq: collection "${collection}" has useSessions: ${JSON.stringify(value) ?? 'undefined'}; masq needs useSessions: true to end a borrowed session`
-
-const BOOKKEEPING = new Set(['payload-preferences', 'payload-locked-documents'])
-
-export const READ_ONLY_MESSAGE = 'Masquerade is read-only: nothing can be created, changed or deleted while masquerading.'
-
-/**
- * Every collection operation in Payload 3.92 that writes and runs `beforeOperation`. Login
- * (it only records the sign-in) and refresh (refused separately) are left out.
- */
-const COLLECTION_WRITES = new Set(['create', 'update', 'delete', 'restoreVersion', 'unlock', 'forgotPassword', 'resetPassword'])
-
-/** Global operations that write. A global restore skips `beforeChange`, so the guard sits here. */
-const GLOBAL_WRITES = new Set(['update', 'restoreVersion'])
-
-/** Read-only masquerade: refuse writes while masquerading (the plugin's own writes are marked internal). */
-const readOnlyGuard: CollectionBeforeOperationHook = ({ args, operation, req }) => {
-  if (req.context?.masqInternal) return args
-  if (COLLECTION_WRITES.has(operation) && isMasquerading(req.payload, req.headers)) throw new APIError(READ_ONLY_MESSAGE, 403, undefined, true)
-  return args
-}
-
-const globalReadOnlyGuard: GlobalBeforeOperationHook = ({ args, operation, req }) => {
-  if (req.context?.masqInternal) return args
-  if (GLOBAL_WRITES.has(operation) && isMasquerading(req.payload, req.headers)) throw new APIError(READ_ONLY_MESSAGE, 403, undefined, true)
-  return args
-}
-
-/** A borrowed session ends on time: it can't be refreshed (the admin refreshes tokens while you're active). */
-const noBorrowedRefresh: CollectionBeforeOperationHook = ({ args, operation, req }) => {
-  if (operation === 'refresh' && borrowedBy(req.payload, req.headers)) throw new APIError('A masquerade session can’t be extended.', 403, undefined, true)
-  return args
-}
 
 /**
  * Masquerade: an admin signs in as another user to see what they see.
@@ -98,24 +68,22 @@ export const masqPlugin =
           hooks: {
             ...g.hooks,
             beforeOperation: [...(g.hooks?.beforeOperation ?? []), globalReadOnlyGuard],
-            beforeChange: [
-              ...(g.hooks?.beforeChange ?? []),
-              (({ data, req }) => {
-                if (!req.context?.masqInternal && isMasquerading(req.payload, req.headers)) throw new APIError(READ_ONLY_MESSAGE, 403, undefined, true)
-                return data
-              }) as GlobalBeforeChangeHook,
-            ],
+            beforeChange: [...(g.hooks?.beforeChange ?? []), globalChangeGuard],
           },
         }))
       : config.globals
-    // Another plugin or the host can still turn sessions off after this point, so check the built config too.
     const onInit = config.onInit
     return {
       ...config,
       onInit: async (payload) => {
+        // Another plugin or the host can still turn sessions off after this point, so check the built config too.
         if (!sessionsOn(payload, collection))
           throw new Error(sessionsError(collection, (payload.collections[collection as never]?.config.auth as { useSessions?: unknown } | undefined)?.useSessions))
         await onInit?.(payload)
+        // Collections and globals that Payload or later plugins add, or rebuild, only exist from here on. The guards
+        // go on all of them, and Payload doesn't start unless every one is confirmed.
+        const { ok, missing } = ensureGuards(payload)
+        if (!ok) throw new Error(`payload-plugin-masq: read-only masquerade could not be put in place on ${missing.join(', ')}`)
       },
       globals,
       custom: { ...config.custom, masq: resolved },
