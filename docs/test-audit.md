@@ -2,6 +2,63 @@
 
 Newest first.
 
+## 2026-11-27 (after review): the stop tests run against the old source
+
+A reviewer ran the 13 new stop tests against the earlier source: 11 fail and 2 pass. The
+2 that pass cover behavior that was already right. The proof of the change is the 2 tests
+that end the session when the earlier spelling is upper or mixed case. The other 9 failures
+are only the lookup count; their safety checks would pass on the earlier source too, so
+they guard the new lookup against regressions. This replaces the "not run" note below.
+
+## 2026-11-27 (latest): stop matches a target id recorded in another spelling
+
+A fix for masquerades started before the upgrade. 13 new tests in `rest.test.ts`, `stop with a state cookie set before an upgrade`. Each signs the state cookie again with the change under test. They weren't run against the old source in this pass; a reviewer does that separately. Suite: 121 → 134.
+
+| Promise | Test |
+| --- | --- |
+| A state spelling the target in upper or mixed case: the borrowed session is deleted, `onStop` gets the account's own id and `expired: false`, the return uses that id, with one lookup | `…ends the borrowed session when the state spells the target in …` (2) |
+| A matching stop makes no lookup | `…looks nothing up when the state and the token spell the target alike` |
+| A state naming another account, in any of those spellings, or an id the database can't read, deletes nothing; the admin still gets their own session back and the state cookie is cleared | `…deletes nothing when the state names another account in …` (3), `…deletes nothing when the database cannot read the id…` |
+| A lookup that fails, finds nothing, or gives no id, an object or a non-finite number is no match, with the same answer | `…deletes nothing when the lookup …` (5, mocked) |
+| A state naming another masquerader makes no lookup, deletes nothing and restores nobody | `…looks nothing up and deletes nothing when the state names another masquerader` |
+
+Skipped: number ids (the comparison is the same code, and `numeric-id.test.ts` covers how start reads their spellings). Gap for the lead: the banner still compares the state's spelling with the signed-in user's id, and no test covers it with an older spelling.
+
+## 2026-11-27 (later): start goes by the id of the account it finds
+
+A security fix from review. New tests, written first: 14 of the 18 failed on the old source. The other four guard behavior that was already right (your own number id spelled exactly, a target's number id spelled exactly, and one answer for someone not allowed, with text ids and with number ids). All pass now. Suite: 103 → 121.
+
+| Promise | Test |
+| --- | --- |
+| Your own id in upper or mixed case is refused with "Choose another user.", with no cookies, no new session, no `onStart`, and `canMasquerade` not asked about you | `rest.test.ts`, `start goes by the account found… > refuses yourself with your id in …` (2) |
+| For a target spelled in upper or mixed case, `onStart` and the signed state get the found id; Return deletes the borrowed session, redirects to that id and reports `onStop` once with it and `expired: false` | `…records the found id for a target spelled in …` (2) |
+| Someone not allowed gets one answer for real and made-up ids in any case | `…gives someone who is not allowed one answer…` |
+| The banner names the target after such a start | `rsc.test.tsx`, `…the banner names the target when the start request spelled its id in upper case` |
+| Number ids: your own is refused as `1`, `01`, `1.0` or `001` | `numeric-id.test.ts`, `number ids > refuses yourself spelled …` (4) |
+| Number ids: for a target spelled `2`, `02` or `2.0`, the record, `onStop` and the return use `2` | `…records the found id for a target spelled …` (3) |
+| Number ids: someone not allowed gets one answer for real, made-up and odd spellings | `…gives someone who is not allowed one answer…` |
+| A user that comes back with a missing, empty, object or non-finite id starts nothing | `…starts nothing when the lookup hands back …` (4) |
+
+Skipped: Postgres and SQLite (the number-id tests use a number `id` field on MongoDB, which reads those spellings as one number; the fix doesn't depend on how an adapter reads them, because it compares the found account's id), and GraphQL (start is a REST endpoint only).
+
+## 2026-11-27: start refusals don't say whether a user exists
+
+A security fix. New tests in `test/rest.test.ts`, through Payload's REST router, written first: 10 of the 13 failed on the old source (the other three guard behavior that was already right). All pass now. Each compares status, body and headers. Suite: 90 → 103.
+
+| Promise | Test (`start never says whether a user id exists…`) |
+| --- | --- |
+| Someone not allowed gets one answer for a real id, a made-up id and malformed ids, with no cookies, with read access to no users or all users, and with `debug` off and on | `answers every id alike when the rule …` (7: no, throws, rejects, truthy, nothing, fails without a target, throws only with a target) |
+| A refusal calls neither `onStart` nor `onStop` | `calls neither audit hook on a refusal` |
+| Someone allowed is still told a user wasn't found | `still tells someone who is allowed…` |
+| Someone who may use masquerade, refused for a user they can't read (or whose read check throws), gets the not-found answer | `…gets the not-found answer for a user they cannot read…` |
+| The 403 for a refused target is given only for a user they can read | `…is told they may not, only for a user they can read` |
+| A failure loading a real user answers like a missing one | `answers the same when loading a real user fails` |
+| A rule that allows a target but says no without one still starts | `still starts when the rule allows the target…` |
+
+Other endpoints: start is the only one that takes an id from the caller. Stop reads ids only from the signed state cookie and the signed borrowed token, and search checks permission before it reads anything (already covered).
+
+Skipped: response timing (not evened out), and Postgres or SQLite (the suite runs on MongoDB; a lookup that throws there is covered by the read hook test).
+
 ## 2026-11-26: borrowed sessions are rechecked on every request (K807)
 
 A security fix. Before, a masquerade outlived the masquerader's permission for the rest of its hour, and a bearer token with no cookie had nothing to stop it. New file `test/recheck.test.ts`, written first: 9 of its first 12 tests failed on the old source. A review then found six more gaps, each with a test that fails on the old source: 18 tests, all passing. Two Server Component tests changed their expected banner from "You may no longer masquerade as this user." to "Your masquerade has ended.", because the session is now really gone. Suite: 49 → 67. A second review found that a borrowed token spelled loosely (padding or whitespace in the signature, spaces around the cookie name) signed in while Masq didn't see it as borrowed. Twelve tests now cover six spellings, each checked after a demotion and under read-only mode; ten failed on the old source (the percent-encoded cookie was already caught and stays as a guard). Suite: 67 → 79. A third review found that with `useSessions: false` the recheck did nothing, that `readOnly: 0` turned read-only off, that a repeated token was rechecked once per copy, and that stop picked the wrong claim when two borrowed tokens came in. Four tests, each failing on the old source, now cover them. Suite: 79 → 83. A fourth review found that the sessions check missed `0` and `''`, a plugin listed after Masq, and a built config changed before start-up, and that stop matched the claim by user only, so with two tokens for one target it could report the wrong masquerader or delete the target's own session. Each now has a test that fails on the old source: two config refusals, a refusal at start-up, a runtime check with sessions turned off after start-up, and two stop cases. Suite: 83 → 88. A fifth review found that with the state cookie present, stop still matched by user only. Two tests, both failing on the old source, cover the target's own token and another masquerader's token signing in beside the state cookie. Suite: 88 → 90.

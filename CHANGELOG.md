@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.1.3 (2026-11-28)
+
+### Security
+
+- Start (`POST /:id/masq`) no longer tells someone who isn't allowed whether a user exists.
+  Someone `canMasquerade` refuses with no target now gets the same 403 for every other id it
+  won't let them use, whether a user has it or not.
+- Start now goes by the id of the account it finds, however the request spelled it. The check
+  that you aren't choosing yourself, the masquerade's record and everything after it, including
+  `onStop`'s `targetId`, the banner and the return, use that one id. This covers text ids and
+  number ids.
+- A masquerade started before this upgrade may have recorded the target's id as the request
+  spelled it. Stop now looks that account up when the spellings differ. If its own id is the
+  borrowed session's, stop deletes the session, and `onStop` (with `expired: false`) and the
+  return use that id. If the lookup fails or finds anything else, stop answers as it did before.
+
+Answers a client might rely on that change:
+
+- For someone who may not use masquerade at all, an id no user has, or one that isn't a valid
+  id, answers 403 "You may not masquerade as this user." (404 "User not found." for a missing
+  user before).
+- For someone who may use masquerade, a user they're refused and their own read access doesn't
+  find answers 404 "User not found." (403 before). A refused user they can read still answers
+  403. If your `canMasquerade` doesn't answer `true` with no target, they get 403 for missing
+  users too.
+- If loading the user fails (a database error or a read hook that throws), start logs it and
+  gives the same answer as for a missing user (an error response before).
+- Your own account, in any spelling of its id the database accepts, answers 400 "Choose another
+  user.", and `canMasquerade` isn't asked about it.
+- A looked-up user that comes back with no usable id (not a non-empty string or a finite
+  number, for example after a read hook changes it) counts as not found.
+
+Who can masquerade as another user is unchanged.
+
+Stop after an upgrade was tested through Payload's REST router with its usual text ids, using
+a state cookie signed again in the test with another spelling. Lookup failures and unusable
+results were mocked. Not tested for it: number ids, a real upgrade of a running app, Postgres
+or SQLite, or a browser. The banner is unchanged and wasn't tested with an older spelling. A
+reviewer ran the new tests against the old source: 11 of the 13 fail there.
+
+Tested through Payload's REST router with MongoDB in memory, with its usual ids and with a
+number `id` field. Refusals were compared by status, body and headers, those for someone who
+may not use masquerade with Payload's `debug` off and on too. The banner was rendered in the
+test harness. Not tested: Postgres or SQLite, GraphQL for these changes, a real Next.js server
+or browser, and response timing, which this change doesn't try to even out.
+
+### Development
+
+- The Payload dev dependencies used by the tests move to 3.94.2, which brings mongoose 8.24.7
+  and clears `npm audit`. Peer ranges are unchanged, and mongoose isn't in the published
+  package. Tested with the full suite (134 tests) and the typecheck; not tested in a host app.
+
 ## 0.1.2 (2026-11-26)
 
 ### Security
