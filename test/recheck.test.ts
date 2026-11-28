@@ -1,9 +1,10 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import type { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { BasePayload, buildConfig, getPayload, handleEndpoints, type Plugin, type Payload, type SanitizedConfig } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { masqPlugin, STATE_COOKIE, type MasqRecheckArgs, type MasqStopArgs } from '../src/index.js'
+import { startMongo } from './mongo.js'
 
 // A borrowed session is rechecked on every request: once the masquerader may no longer
 // masquerade as the target, the session ends, whether the token comes in a cookie or a header.
@@ -47,7 +48,7 @@ const sessionsOf = async (u: U) => ((await payload.findByID({ collection: 'users
 const setRole = (u: U, role: string) => payload.update({ collection: 'users', id: u.id, data: { role } as never, context: { masqInternal: true } })
 
 beforeAll(async () => {
-  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+  mongo = await startMongo()
   config = buildConfig({
     secret: 'recheck-test-secret-not-for-production',
     logger: { options: { level: 'silent' } },

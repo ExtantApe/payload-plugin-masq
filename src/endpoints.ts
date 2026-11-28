@@ -3,6 +3,7 @@ import { addSessionToUser, parseCookies } from 'payload/shared'
 
 import { BORROWED_CLAIM, borrowedClaim, cookie, encodeState, isMasquerading, masqOptions, masqStateOf, RETURN_COOKIE, sessionsOn, STATE_COOKIE } from './state.js'
 import { mayMasquerade } from './access.js'
+import { ensureGuards } from './guard.js'
 import type { MasqUser, ResolvedMasqOptions } from './types.js'
 
 const STATE_SECONDS = 24 * 60 * 60
@@ -77,6 +78,12 @@ export const startEndpoint: Endpoint = {
   handler: async (req) => {
     const opts = masqOptions(req.payload)
     const user = signedIn(req)
+    // A borrowed session is handed out only while read-only masquerade is confirmed on everything Payload built.
+    const guards = ensureGuards(req.payload)
+    if (!guards.ok) {
+      req.payload.logger.error({ msg: `payload-plugin-masq: masquerade is unavailable; read-only masquerade is not in place on ${guards.missing.join(', ')}` })
+      throw new APIError('Masquerade is unavailable right now. The server log says why.', 503, undefined, true)
+    }
     // Without sessions a borrowed token can't be ended early, so none is handed out.
     if (!sessionsOn(req.payload, opts.collection)) throw new APIError('Masquerade needs sessions turned on.', 500, undefined, true)
     if (isMasquerading(req.payload, req.headers)) throw new APIError('Stop masquerading first.', 400, undefined, true)

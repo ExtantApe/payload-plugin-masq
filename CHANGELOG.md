@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+Upgrade from 0.1.4. Nothing to run after upgrading.
+
+What changes:
+
+- Read-only masquerade now covers every collection and global Payload ends up with, including
+  the ones Payload adds itself (folders, query presets, jobs) and the ones other plugins add or
+  rebuild after Masq. Payload's preferences and document locks stay writable, as before.
+- While masquerading, running, queueing and cancelling jobs answers 403, at
+  `/api/payload-jobs/run`, `/api/payload-jobs/handle-schedules` and through `payload.jobs`
+  when the call passes the masquerading request. Jobs Payload runs on its own are unchanged.
+- Payload refuses to start if Masq can't confirm read-only mode is in place, with an error that
+  names what was missing. If Payload starts with `disableOnInit`, the same check runs when a
+  masquerade starts and on every request with a borrowed session. If it can't confirm it later,
+  start answers 503 and a running borrowed session signs in as nobody until it can.
+
+After upgrading, start your app once and check that it starts, and check any code of yours
+that runs, queues or cancels jobs with a request.
+
+Tested: the full suite (149 tests, twice), the typecheck, the build and the leak check, all on
+MongoDB. Not tested: a host app, Postgres and SQLite, GraphQL on the newly covered
+collections, a dev reload in a real Next.js app, and storage adapters' upload endpoints.
+
 ## 0.1.4 (2026-11-28)
 
 Shorter README and changelog. No code changes, and nothing for a host to do after 0.1.3.

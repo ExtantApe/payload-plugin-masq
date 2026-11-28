@@ -1,5 +1,5 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import type { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, createLocalReq, getPayload, handleEndpoints, type Payload, type PayloadRequest, type SanitizedConfig } from 'payload'
 import type { ReactElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { masqPlugin, STATE_COOKIE, type MasqPermissionArgs } from '../src/index.js'
 import { encodeState } from '../src/state.js'
 import { AdminMasqueradeBanner, MasqueradeBanner, MasqueradeCell, MasqueradeField, MasqueradeNavLink, MasqueradeView } from '../src/rsc/index.js'
+import { startMongo } from './mongo.js'
 
 // A minimal render harness for the Server Components: Next's request APIs are
 // mocked, Payload is real (in-memory MongoDB), and each component is awaited
@@ -131,7 +132,7 @@ function expectRefused(out: Awaited<ReturnType<typeof render>>, { banner = '' }:
 }
 
 beforeAll(async () => {
-  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+  mongo = await startMongo()
   config = buildConfig({
     secret: 'rsc-test-secret-not-for-production',
     telemetry: false,

@@ -29,15 +29,25 @@ Built for support and troubleshooting.
 - **Read-only** (default): look everywhere the user can, but change nothing. While
   masquerading, Payload refuses (403) on every collection: create, update, delete (single and
   bulk), restoring a version, unlock, forgot-password and reset-password; and on every global:
-  update and restoring a version. That holds over REST, GraphQL and the Local API when you pass
-  the request. The borrowed token itself is marked, so clearing the masquerade cookie doesn't
-  lift it, whether the token comes in the cookie or an `Authorization` header. Still allowed:
-  reads, Payload's own bookkeeping (preferences, document locks), signing in, signing out, and
-  the plugin's own return. Not covered: your own endpoints and server actions (call
-  `assertNotMasquerading(payload, headers)` there), Local API calls made without the request,
-  and email verification links, which Payload runs without hooks. If your site lets signed-in
-  users call `/api/payload-jobs/run`, a masquerader can start jobs that are already queued;
-  Masq doesn't block that.
+  update and restoring a version. That covers the collections Payload adds itself (folders,
+  query presets, jobs) and the collections and globals other plugins add or rebuild after Masq.
+  Running, queueing and cancelling jobs is refused too, at `/api/payload-jobs/run`,
+  `/api/payload-jobs/handle-schedules` and through `payload.jobs` when you pass the request.
+  That holds over REST, GraphQL and the Local API when you pass the request. The borrowed token
+  itself is marked, so clearing the masquerade cookie doesn't lift it, whether the token comes
+  in the cookie or an `Authorization` header. Still allowed: reads, Payload's own bookkeeping
+  (preferences, document locks), signing in, signing out, and the plugin's own return. Not
+  covered: your own endpoints and server actions, and custom endpoints other plugins add (call
+  `assertNotMasquerading(payload, headers)` in yours), Local API calls made without the
+  request, writes made straight through `payload.db` or `payload.kv`, and email verification
+  links, which Payload runs without hooks.
+- **Checked at start-up.** When Payload starts, Masq puts read-only mode on everything Payload
+  built and checks it. If it can't confirm that, Payload doesn't start, and the error names
+  what was missing. If Payload starts with `disableOnInit`, the same check runs when a
+  masquerade starts and on every request with a borrowed session. If it later can't confirm it
+  (for example after a dev reload), start answers 503 "Masquerade is unavailable right now. The
+  server log says why." and the log says what was missing, and a running borrowed session signs
+  in as nobody until it's back.
 - **A leftover masquerade cookie** lasts up to 24 hours if you never press **Return to my
   account** (for example, the borrowed hour ran out). Until it's cleared, that browser is
   treated as masquerading, so forgot-password and other writes answer 403. Press **Return to my
@@ -67,6 +77,14 @@ Built for support and troubleshooting.
   `basePath`, stopping a revoked masquerade can report `onStop` twice.
 - Never as yourself, no nesting, no public endpoints: masquerading needs a signed-in user the
   rules allow.
+
+## Upgrading from 0.1.4
+
+Nothing to run. After upgrading, start your app once and check that it starts. If it refuses
+with "read-only masquerade could not be put in place", the error lists what Masq couldn't
+guard; usually another plugin replaced hooks or access after start-up. Check any job runner,
+cron or hook of yours that runs, queues or cancels jobs with a request: while that request is
+masquerading, it now gets 403.
 
 ## Upgrading from 0.1.2
 

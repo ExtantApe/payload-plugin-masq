@@ -1,9 +1,10 @@
 import { mongooseAdapter } from '@payloadcms/db-mongodb'
-import { MongoMemoryReplSet } from 'mongodb-memory-server'
+import type { MongoMemoryReplSet } from 'mongodb-memory-server'
 import { buildConfig, getPayload, handleEndpoints, type Payload, type SanitizedConfig } from 'payload'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { decodeState, masqPlugin, STATE_COOKIE, type MasqStartArgs, type MasqStopArgs } from '../src/index.js'
+import { startMongo } from './mongo.js'
 
 // Number ids, where the database reads "01" and "1.0" as 1. Real Payload on in-memory MongoDB with a number
 // `id` field; the SQL adapters, whose default ids are numbers, aren't run here.
@@ -40,7 +41,7 @@ const errorOf = async (res: Response) => ((await res.json()) as { errors?: { mes
 const signsInAs = async (token: string) => (await payload.auth({ headers: new Headers({ Authorization: `Bearer ${token}` }) })).user?.id ?? null
 
 beforeAll(async () => {
-  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+  mongo = await startMongo()
   config = buildConfig({
     secret: 'numeric-test-secret-not-for-production',
     logger: { options: { level: 'silent' } },

@@ -74,7 +74,13 @@ export type MasqPluginOptions = {
 }
 
 export type ResolvedMasqOptions = Required<Omit<MasqPluginOptions, 'onStart' | 'onStop' | 'startPath' | 'recheck'>> &
-  Pick<MasqPluginOptions, 'onStart' | 'onStop' | 'recheck'> & { startPath: string; apiRoute: string; adminRoute: string }
+  Pick<MasqPluginOptions, 'onStart' | 'onStop' | 'recheck'> & {
+    startPath: string
+    apiRoute: string
+    adminRoute: string
+    /** Set when Payload starts: true once read-only masquerade is confirmed on everything Payload built. Start needs it. */
+    guarded?: boolean
+  }
 
 /** The signed state of an active masquerade (in an httpOnly cookie). */
 export type MasqState = {
